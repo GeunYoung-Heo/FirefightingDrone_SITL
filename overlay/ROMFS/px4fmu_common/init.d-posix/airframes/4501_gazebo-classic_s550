@@ -1,0 +1,62 @@
+#!/bin/sh
+#
+# @name DJI F550/S550 SITL
+#
+# @type Hexarotor x
+#
+# @maintainer Firefighting Drone Project <rmsdud200@gmail.com>
+#
+
+. ${R}etc/init.d/rc.mc_defaults
+
+param set-default MAV_TYPE 13
+
+# Attitude / rate gains (baseline from typhoon_h480; tune for actual S550 in-flight)
+param set-default MC_PITCHRATE_P 0.0800
+param set-default MC_PITCHRATE_I 0.0400
+param set-default MC_PITCHRATE_D 0.0010
+param set-default MC_PITCH_P 9.0
+param set-default MC_ROLLRATE_P 0.0800
+param set-default MC_ROLLRATE_I 0.0400
+param set-default MC_ROLLRATE_D 0.0010
+param set-default MC_ROLL_P 9.0
+
+# Position controller
+param set-default MPC_XY_VEL_I_ACC 4
+param set-default MPC_XY_VEL_P_ACC 3
+
+param set-default RTL_DESCEND_ALT 10
+
+param set-default MAV_PROTO_VER 2
+
+# Control allocation: multicopter, 6 rotors in Hexa-X layout
+param set-default CA_AIRFRAME 0
+param set-default CA_ROTOR_COUNT 6
+
+# Hexa-X normalized rotor positions (60° spacing, identical to typhoon_h480)
+param set-default CA_ROTOR0_PX 0.0
+param set-default CA_ROTOR0_PY 1.0
+param set-default CA_ROTOR0_KM -0.05
+param set-default CA_ROTOR1_PX 0.0
+param set-default CA_ROTOR1_PY -1.0
+param set-default CA_ROTOR1_KM 0.05
+param set-default CA_ROTOR2_PX 0.866025
+param set-default CA_ROTOR2_PY -0.5
+param set-default CA_ROTOR2_KM -0.05
+param set-default CA_ROTOR3_PX -0.866025
+param set-default CA_ROTOR3_PY 0.5
+param set-default CA_ROTOR3_KM 0.05
+param set-default CA_ROTOR4_PX 0.866025
+param set-default CA_ROTOR4_PY 0.5
+param set-default CA_ROTOR4_KM 0.05
+param set-default CA_ROTOR5_PX -0.866025
+param set-default CA_ROTOR5_PY -0.5
+param set-default CA_ROTOR5_KM -0.05
+
+# Motor PWM outputs only — S550 has no gimbal, landing gear, or camera trigger.
+param set-default PWM_MAIN_FUNC1 101
+param set-default PWM_MAIN_FUNC2 102
+param set-default PWM_MAIN_FUNC3 103
+param set-default PWM_MAIN_FUNC4 104
+param set-default PWM_MAIN_FUNC5 105
+param set-default PWM_MAIN_FUNC6 106

@@ -1,0 +1,17 @@
+# PX4-Autopilot 전체 트리는 외부 저장소(github.com/PX4/PX4-Autopilot)에서 clone.
+# 우리 변경사항은 overlay/ 에 별도로 관리한다.
+PX4-Autopilot/
+
+# OS / 에디터 부산물
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Python 캐시 (스크립트에서 만들 가능성)
+__pycache__/
+*.pyc
+
+# 빌드/실행 로그 (없을 거지만 방어)
+*.log
