@@ -32,17 +32,33 @@ S550 헥사콥터를 PX4 SITL + Gazebo Classic 환경에서 시뮬레이션하�
 ├── run_sitl.sh              # SITL 실행 래퍼 (스크립트 위치 기준으로 PX4-Autopilot 자동 인식)
 ├── apply_overlay.sh         # overlay/ 의 파일을 PX4-Autopilot/ 으로 복사하는 헬퍼
 ├── .gitignore               # PX4-Autopilot/ 등 제외
+│
 ├── overlay/                 # ← S550 커스터마이징을 PX4 트리 구조 그대로 미러링
-│   ├── Tools/simulation/gazebo-classic/sitl_gazebo-classic/models/s550/
-│   │   ├── s550.sdf.jinja
-│   │   ├── model.config
-│   │   └── meshes/          # typhoon mesh 9개 자기완결 사본
+│   ├── Tools/simulation/gazebo-classic/sitl_gazebo-classic/
+│   │   ├── models/s550/
+│   │   │   ├── s550.sdf.jinja              # 짐벌/레그 fixed, 외란 plugin 등록
+│   │   │   ├── model.config
+│   │   │   └── meshes/                     # typhoon mesh 9개 자기완결 사본
+│   │   └── worlds/
+│   │       └── s550.world                  # 단순 회색 ground (어두운 asphalt 대체)
 │   ├── ROMFS/px4fmu_common/init.d-posix/airframes/
 │   │   ├── 4501_gazebo-classic_s550        # 신규 airframe
 │   │   ├── 4501_gazebo-classic_s550.post
 │   │   └── CMakeLists.txt                  # s550 항목 추가된 수정본
 │   └── src/modules/simulation/simulator_mavlink/
 │       └── sitl_targets_gazebo-classic.cmake   # s550 항목 추가된 수정본
+│
+├── tools/                   # 외란 테스트 도구 모음 (7장 참조)
+│   ├── apply_disturbance.py # CLI — Wrench 메시지 publish (pulse/sustained/stop)
+│   └── disturbance_plugin/
+│       ├── disturbance_plugin.cc           # Gazebo Classic ModelPlugin (force 적용 + 화살표 spawn/track)
+│       ├── CMakeLists.txt
+│       ├── README.md
+│       ├── build/                          # cmake/make 산출물 (gitignore)
+│       └── disturbance_arrow_assets/
+│           ├── model.config                # Gazebo model:// URI 인식용
+│           ├── model.sdf                   # placeholder
+│           └── meshes/cone.stl             # 화살표 끝 cone mesh (16 segments)
 │
 └── PX4-Autopilot/           # PX4 v1.14.4 체크아웃 (3.2절에서 clone, .gitignore로 제외)
     ├── Tools/setup/ubuntu.sh
@@ -87,7 +103,15 @@ QGC가 자동으로 UDP 14550으로 PX4 SITL에 연결됩니다. pxh 프롬프�
 3. 3.1 ~ 3.4 셋업 (PX4 clone, ubuntu.sh, Gazebo Classic 복구)
 4. **3.6 `./apply_overlay.sh` 실행** ← S550 커스터마이징 적용
 5. 3.5 QGroundControl AppImage 설치
-6. `./run_sitl.sh s550` 실행
+6. **7.3 disturbance_plugin 빌드** ← 외란 테스트 도구 (선택, 외란 실험 시 필요)
+7. `./run_sitl.sh s550` 실행
+
+**외란 테스트 — 호버 중인 SITL에 step force 인가:**
+```bash
+./tools/apply_disturbance.py --force "30 0 0" --duration 1.0    # 1초 펄스
+./tools/apply_disturbance.py --force "10 0 0" --sustained        # 지속 (Ctrl+C로 중단)
+```
+빨간 화살표가 드론에 부착되어 force 방향·크기를 보여주고, PX4 위치 제어기의 외란 거부 거동을 관찰할 수 있습니다. 자세한 내용은 7장 참조.
 
 ---
 
@@ -325,8 +349,9 @@ cd ~/Firefighting_Drone/SITL
 SITL ARGS
 sitl_bin: .../bin/px4
 model: s550
-GAZEBO_PLUGIN_PATH :.../build_gazebo-classic
-GAZEBO_MODEL_PATH  :.../sitl_gazebo-classic/models
+GAZEBO_PLUGIN_PATH /home/.../tools/disturbance_plugin/build:.../build_gazebo-classic
+GAZEBO_MODEL_PATH  /home/.../tools/disturbance_plugin:.../sitl_gazebo-classic/models
+empty world, default world s550.world for model found      <- s550.world 자동 선택 (단순 회색 ground)
 Using: .../models/s550/s550.sdf
 SITL COMMAND: ...
 px4 starting.
@@ -515,7 +540,129 @@ SDF의 `<zero_position_disarmed>0</zero_position_disarmed>`가 disarmed 상태�
 
 ---
 
-## 7. Troubleshooting (시행착오 로그)
+## 7. 외란 테스트 도구 (Disturbance Testing)
+
+S550 위치 제어기의 외란 거부 강건성을 평가하기 위한 도구. 호버 중인 드론의 base_link에 임의의 force/torque를 인가하고, 화살표로 시각화한다.
+
+### 7.1 구성 요소
+
+| 컴포넌트 | 역할 |
+|---|---|
+| `tools/disturbance_plugin/disturbance_plugin.cc` | Gazebo Classic ModelPlugin. Wrench 메시지 수신 → 매 physics step base_link에 force/torque 적용 + 화살표 모델 spawn/track/despawn |
+| `tools/disturbance_plugin/disturbance_arrow_assets/` | 화살표 끝(cone) mesh 자원: `meshes/cone.stl` (16 segments) + `model.config` (Gazebo `model://` URI 인식용) |
+| `tools/apply_disturbance.py` | CLI. Wrench 메시지를 PX4-Gazebo로 publish (시작 1회 + 종료 zero 1회). 화살표는 플러그인이 알아서 처리 |
+| `overlay/.../worlds/s550.world` | s550 전용 world. `empty.world` 의 어두운 asphalt_plane 제거, 단순한 회색 평면으로 대체 |
+
+### 7.2 왜 plugin인가 (설계 근거)
+
+Gazebo Classic의 표준 `<link>/wrench` 토픽은 publish 1회당 1 physics step(약 1ms) 만 force가 적용된다. `gz topic -p`를 외부에서 루프로 돌리면 호출당 약 400ms 오버헤드가 있어 효과적 duty cycle이 0.6% 수준에 그쳐 외란 강도가 무의미하다. 플러그인 내부에서 마지막에 받은 wrench 값을 매 step 자동 적용하면 단 한 번의 publish로 충분하다.
+
+화살표 시각화도 플러그인 내부에서 처리한다:
+- 외란 시작 시 `~/factory`로 cone-tipped arrow 모델 spawn
+- 매 physics step `Model::SetWorldPose`로 드론 world pose에 맞춰 갱신 → 드론이 움직이면 화살표도 따라감
+- 외란 종료 시 `~/request` (entity_delete cmd)로 despawn
+
+> **참고:** `~/visual` 토픽으로 Visual 메시지를 publish해 기존 visual의 scale/pose를 동적으로 갱신하는 방법은 Gazebo Classic 11에서 ModelPlugin 발신 시 일관되게 동작하지 않는다 (Scene이 id 기반 lookup을 함). 별도 모델 spawn + SetWorldPose 방식이 안정적.
+
+### 7.3 빌드
+
+```bash
+cd ~/Firefighting_Drone/SITL/tools/disturbance_plugin
+mkdir -p build && cd build
+cmake ..
+make -j$(nproc)
+```
+
+산출물: `build/libdisturbance_plugin.so`. `run_sitl.sh`가 자동으로 `GAZEBO_PLUGIN_PATH`에 prepend.
+
+> `libgazebo-dev`가 필요. 3.4절에서 이미 설치됨.
+
+### 7.4 SDF 등록 (이미 overlay에 반영됨)
+
+`s550.sdf.jinja`의 `</model>` 직전에 다음 블록이 있다:
+
+```xml
+<plugin name="disturbance" filename="libdisturbance_plugin.so">
+  <link_name>base_link</link_name>
+</plugin>
+```
+
+선택 SDF 파라미터:
+
+| 파라미터 | 기본값 | 의미 |
+|---|---|---|
+| `<link_name>` | `base_link` | force/torque를 적용할 link |
+| `<topic_name>` | `/gazebo/<world>/<model>/disturbance_cmd` | Wrench 수신 토픽 |
+| `<enable_arrow>` | `true` | 화살표 시각화 on/off |
+| `<arrow_scale_factor>` | `0.05` | 길이/N — 예: 30N → 1.5m |
+| `<arrow_max_length>` | `2.0` | 길이 cap (m) |
+| `<arrow_radius>` | `0.03` | shaft 반경 (m). cone head 반경은 shaft × 3 |
+
+### 7.5 사용법
+
+(SITL 부팅 + `pxh> commander takeoff` + EKF 안정화 30초 대기 후, 새 터미널에서)
+
+```bash
+cd ~/Firefighting_Drone/SITL
+
+# 1초 펄스, X축 양방향 30N
+./tools/apply_disturbance.py --force "30 0 0" --duration 1.0
+
+# Y축 / Z축
+./tools/apply_disturbance.py --force "0 30 0" --duration 1.0
+./tools/apply_disturbance.py --force "0 0 -30" --duration 1.0     # 아래쪽 push
+
+# 인가점 offset (CoG에서 떨어진 곳 → 자연스러운 토크 동반)
+./tools/apply_disturbance.py --force "20 0 0" --offset "0 0.2 0" --duration 0.5
+
+# Sustained 외란 (바람 결의 시나리오), Ctrl+C로 중단
+./tools/apply_disturbance.py --force "10 0 0" --sustained
+
+# 명시적 외력 해제 (sustained 중단 후 잔여 force 정리 등)
+./tools/apply_disturbance.py --stop
+
+# 외란 timestamp 기록 (추후 ULog 분석과 동기용)
+./tools/apply_disturbance.py --force "30 0 0" --duration 1.0 \
+    --log ~/Firefighting_Drone/SITL/tools/disturbance_log.tsv
+```
+
+### 7.6 좌표계 — Body frame
+
+`AddLinkForce` / `AddRelativeTorque`로 적용하므로 **body frame (드론 자세 기준)** — 드론이 기울면 force 방향도 같이 기운다.
+
+화살표는 force를 world frame으로 변환해 표시하므로, 실제 미는 방향을 정확히 보여준다. 드론이 기울면 화살표도 같이 회전한다.
+
+World frame 외란(예: 바람처럼 항상 한 방향)이 필요하면 플러그인 코드의 `AddLinkForce` → `AddForceAtRelativePosition`, `AddRelativeTorque` → `AddTorque` 로 교체하고 재빌드.
+
+### 7.7 화살표 모양 커스터마이즈
+
+`disturbance_plugin.cc`의 `SpawnArrow()` 함수 내부에서 조정 가능:
+- `shaftLen = length * 0.8` / `headLen = length * 0.2` — shaft/head 비율
+- `headR = arrowRadius * 3.0` — head 굵기 (shaft 대비 배수)
+- `<material>` 블록 RGBA — 색상
+
+수정 후 `make -j$(nproc)` 재빌드 + SITL 재기동으로 반영.
+
+### 7.8 화살표 구조
+
+```
+┌─────────────────────────────────────┐
+│   shaft (cylinder)        head      │
+│  radius=0.03m            (cone STL) │
+│   length=80% of L      length=20%  │
+│                          radius=3x  │
+│                                     │
+│  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━▶  │
+│  ↑                                  │
+│  drone CoG (또는 force_offset)
+└─────────────────────────────────────┘
+```
+
+`length = min(|force| × 0.05, 2.0) m` — 외력 크기에 비례. 위 그림의 ━ 부분이 shaft cylinder, ▶ 부분이 cone STL mesh.
+
+---
+
+## 8. Troubleshooting (시행착오 로그)
 
 셋업·개발 과정에서 실제 발생한 문제와 해결 내역입니다. 동일한 함정에 다시 빠지지 않기 위해 기록합니다.
 
@@ -692,7 +839,7 @@ S550 SDF를 typhoon_h480에서 분기(이름만 치환) 후 빌드:
 
 ---
 
-## 8. 다음 단계
+## 9. 다음 단계
 
 - [x] Step 1 — 시스템 의존성 확인 및 설치
 - [x] Step 2 — PX4-Autopilot v1.14.4 클론 + 서브모듈
@@ -702,15 +849,21 @@ S550 SDF를 typhoon_h480에서 분기(이름만 치환) 후 빌드:
 - [x] Step 6 — S550 커스텀 airframe + SDF 모델 작성
 - [x] Step 7 — S550 타깃 빌드 + 이륙 검증 (※ 지상 미세 진동은 6.5 (a)로 보류)
 - [x] Step 8 — QGroundControl AppImage 연결 + GUI 비행 검증 (MAVLink UDP 14550 자동 연결)
-- [ ] Step 9 — S550 SITL 미션 비행/페일세이프 시나리오 검증
+- [x] Step 9 — **외란 입력 도구 Phase 1** — disturbance_plugin 빌드, `apply_disturbance.py` 단일 publish + duration → plugin이 매 physics step force 적용
+- [x] Step 10 — **외란 입력 도구 Phase 2** — cone-tipped 화살표, 드론에 부착되어 매 step 추적 (factory spawn + SetWorldPose)
+- [x] Step 11 — `s550.world` 추가 (단순 회색 ground)
+- [ ] Step 12 — **외란 입력 도구 Phase 3** — 응답 로깅·시각화 (PlotJuggler 라이브 + matplotlib ULog 후처리)
+- [ ] Step 13 — **외란 입력 도구 Phase 4** — 통합 시나리오 스크립트 (takeoff→호버→외란→로그→착륙 자동화)
 - [ ] (이후) S550 지상 진동 해소, mesh S550 사양으로 교체, 소방 페이로드/센서 추가, MAVSDK 미션, ROS 2 px4_ros_com 브리지 등
 
 ---
 
-## 9. 참고 자료
+## 10. 참고 자료
 
 - PX4 v1.14 공식 문서: https://docs.px4.io/v1.14/
 - PX4 SITL Gazebo Classic: https://docs.px4.io/v1.14/en/sim_gazebo_classic/
 - Gazebo Classic: https://classic.gazebosim.org/
+- Gazebo Classic Plugin Tutorial: https://classic.gazebosim.org/tutorials?cat=write_plugin
+- Gazebo Wrench msg / Link::AddLinkForce API: https://gazebosim.org/api/gazebo/11/classgazebo_1_1physics_1_1Link.html
 - DJI F550/S550 hardware reference: https://www.dji.com/flame-wheel-arf
 - QGroundControl: https://docs.qgroundcontrol.com/master/en/

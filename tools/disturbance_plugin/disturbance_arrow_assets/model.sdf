@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<sdf version="1.5">
+  <!-- Placeholder model: this directory is just an asset container so that
+       Gazebo can resolve `model://disturbance_arrow_assets/meshes/cone.stl`
+       via GAZEBO_MODEL_PATH. Don't spawn this directly. -->
+  <model name="disturbance_arrow_assets_placeholder">
+    <static>true</static>
+    <link name="link"/>
+  </model>
+</sdf>

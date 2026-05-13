@@ -15,6 +15,9 @@
 
 set -e
 
+# 스크립트 위치 (저장소 루트). 다른 단계에서 참조.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # (1) conda base 환경 빠져나오기 (PX4 v1.14는 시스템 Python 3.10 기준 검증)
 if [[ -n "$CONDA_DEFAULT_ENV" ]]; then
     eval "$(conda shell.bash hook 2>/dev/null)" || true
@@ -39,6 +42,26 @@ unset GAZEBO_MODEL_PATH GAZEBO_PLUGIN_PATH GAZEBO_RESOURCE_PATH \
 #     필요시 Gazebo GUI의 World 트리에서 모델 우클릭 → Follow 로 추적 활성 가능.
 export PX4_NO_FOLLOW_MODE=1
 
+# (3.5) 커스텀 플러그인 디렉토리를 GAZEBO_PLUGIN_PATH 에 prepend
+#       이 후 sitl_run.sh 내부의 setup_gazebo.bash 가 PX4 기본 플러그인 경로를
+#       append 하므로 둘 다 검색 대상이 된다. 빌드 안 한 경우 경고만.
+DISTURBANCE_PLUGIN_DIR="${SCRIPT_DIR}/tools/disturbance_plugin/build"
+if [[ -f "${DISTURBANCE_PLUGIN_DIR}/libdisturbance_plugin.so" ]]; then
+    export GAZEBO_PLUGIN_PATH="${DISTURBANCE_PLUGIN_DIR}"
+else
+    echo "WARN: libdisturbance_plugin.so not found at ${DISTURBANCE_PLUGIN_DIR}"
+    echo "      외란 인가 실험을 사용하려면 tools/disturbance_plugin/README.md 참고하여 빌드 필요"
+fi
+
+# (3.6) 외란 화살표용 mesh asset 경로를 GAZEBO_MODEL_PATH 에 prepend
+#       disturbance_arrow_assets/ 가 model.config 를 갖고 있어 model:// URI 로
+#       cone.stl 을 찾을 수 있게 한다. setup_gazebo.bash 가 PX4 models 경로를
+#       추가 append.
+DISTURBANCE_ASSETS_PARENT="${SCRIPT_DIR}/tools/disturbance_plugin"
+if [[ -f "${DISTURBANCE_ASSETS_PARENT}/disturbance_arrow_assets/meshes/cone.stl" ]]; then
+    export GAZEBO_MODEL_PATH="${DISTURBANCE_ASSETS_PARENT}"
+fi
+
 # (4) 이전 세션의 좀비 프로세스 청소
 #     sitl_run.sh 는 `pkill -x gazebo` 만 수행하므로 gzserver/gzclient 가
 #     남아 다음 실행 시 드론이 중복 생성되는 현상이 흔히 발생한다.
@@ -50,7 +73,6 @@ pkill -9 -f "build/px4_sitl_default/bin/px4" 2>/dev/null || true
 #     PX4_ROOT는 이 스크립트와 같은 디렉토리에 있는 PX4-Autopilot으로 해석.
 #     저장소를 어느 경로에 두든 자동으로 동작 (팀원 PC 호환).
 MODEL="${1:-iris}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PX4_ROOT="${SCRIPT_DIR}/PX4-Autopilot"
 
 if [[ ! -d "$PX4_ROOT" ]]; then
