@@ -1,0 +1,5 @@
+# 실험 데이터는 git 추적 안 함 (ULog 수 MB, 누적 시 repo 비대)
+# .gitignore와 README.md 만 commit, 나머지 모두 제외.
+*
+!.gitignore
+!README.md

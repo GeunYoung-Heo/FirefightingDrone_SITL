@@ -48,8 +48,12 @@ S550 헥사콥터를 PX4 SITL + Gazebo Classic 환경에서 시뮬레이션하�
 │   └── src/modules/simulation/simulator_mavlink/
 │       └── sitl_targets_gazebo-classic.cmake   # s550 항목 추가된 수정본
 │
-├── tools/                   # 외란 테스트 도구 모음 (7장 참조)
+├── tools/                   # 외란 테스트 + 데이터 기록 도구 (7~8장 참조)
 │   ├── apply_disturbance.py # CLI — Wrench 메시지 publish (pulse/sustained/stop)
+│   ├── record_experiment.py # 외란 인가 + ULog 스냅샷 + metadata 저장 (8장)
+│   ├── data/                # 실험 데이터 (gitignore — .gitignore와 README.md만 추적)
+│   │   ├── .gitignore
+│   │   └── README.md        # 데이터 형식·시간축 정렬 가이드
 │   └── disturbance_plugin/
 │       ├── disturbance_plugin.cc           # Gazebo Classic ModelPlugin (force 적용 + 화살표 spawn/track)
 │       ├── CMakeLists.txt
@@ -662,7 +666,93 @@ World frame 외란(예: 바람처럼 항상 한 방향)이 필요하면 플러�
 
 ---
 
-## 8. Troubleshooting (시행착오 로그)
+## 8. 실험 데이터 기록 (Logging)
+
+외란 응답을 나중에 분석하기 위해 비행 데이터를 디스크에 저장하는 단계. **시각화·분석은 이 저장소 밖의 별도 코드**에서 수행하고, 여기서는 캡처에만 집중한다.
+
+### 8.1 PX4 ULog — 이미 자동
+
+PX4 SITL은 부팅과 동시에 ULog 기록을 시작한다 (`INFO [logger] Start file log`). 위치:
+```
+PX4-Autopilot/build/px4_sitl_default/rootfs/log/<날짜>/<시각>.ulg
+```
+
+이 파일에 거의 모든 uORB 토픽이 시간순으로 들어간다. 외란 분석에 쓰이는 핵심 토픽:
+
+| 토픽 | 의미 |
+|---|---|
+| `vehicle_local_position` | EKF 위치/속도 추정 (NED) |
+| `vehicle_local_position_groundtruth` | **Gazebo 실측** 위치/속도 (s550 SDF의 groundtruth_plugin 덕분) |
+| `vehicle_attitude` / `vehicle_attitude_groundtruth` | 자세 (quaternion), 추정 vs 실측 |
+| `vehicle_attitude_setpoint`, `vehicle_local_position_setpoint` | 제어기 setpoint |
+| `vehicle_angular_velocity`, `sensor_combined` | 각속도, IMU raw |
+| `actuator_motors`, `actuator_outputs` | 6개 모터 출력 |
+| `ekf2_innovations` | EKF residual (추정 성능) |
+
+> **추정 vs 실측 비교**: `*_groundtruth` 토픽 덕분에 EKF 추정이 실제와 얼마나 차이나는지 직접 평가 가능. 제어기 성능 분석의 핵심.
+
+ULog가 기록하는 토픽 범위는 `SDLOG_PROFILE` 파라미터로 조정 가능하지만, 기본값으로 외란 분석엔 충분하다. 더 높은 rate가 필요하면 `pxh> param set SDLOG_PROFILE 8` (high rate) 후 재기록.
+
+### 8.2 한계 — 외란 인가 시점은 ULog에 없음
+
+`apply_disturbance.py`가 언제·어떤 force를 인가했는지는 PX4가 모르므로 ULog에 안 들어간다. 이를 별도 TSV로 기록하고, 분석 시 시간축을 정렬한다 (`tools/data/README.md` 참조).
+
+### 8.3 `record_experiment.py` — 실험 단위 스냅샷
+
+[tools/record_experiment.py](tools/record_experiment.py)는 외란 인가 + ULog 스냅샷 + 메타데이터 저장을 한 번에 처리한다.
+
+**전제**: SITL이 떠 있고 (`./run_sitl.sh s550`) 드론이 호버 중 (`pxh> commander takeoff` + EKF 안정화 30초).
+
+```bash
+cd ~/Firefighting_Drone/SITL
+
+# 1초 펄스, X 30N — 기본 사용
+./tools/record_experiment.py --name step_30N_x --force "30 0 0" --duration 1.0
+
+# offset + 메모 + settle 길게
+./tools/record_experiment.py --name pulse_off_y --force "20 0 0" \
+    --offset "0 0.2 0" --duration 0.5 --settle 10 \
+    --notes "CoG에서 Y +20cm offset, 비대칭 토크 응답"
+
+# Sustained (Ctrl+C로 외란 종료 → 자동 settle + snapshot)
+./tools/record_experiment.py --name wind_5N --force "5 0 0" --sustained
+```
+
+수행 동작:
+1. `tools/data/<timestamp>_<name>/` 디렉토리 생성
+2. `apply_disturbance.py` 호출 (외란 인가 + `disturbance.tsv` 기록)
+3. `--settle` 초 대기 (응답이 ULog에 다 들어가도록)
+4. PX4 `rootfs/log/` 의 최신 `.ulg` → `flight.ulg` 로 복사
+5. `metadata.json` 저장 (외란 파라미터, controller 라벨, 메모 등)
+
+### 8.4 출력 구조
+
+```
+tools/data/20260514T153021_step_30N_x/
+├── flight.ulg         # ULog 스냅샷 (SITL 세션 시작 ~ 복사 시점)
+├── disturbance.tsv    # 외란 이벤트 (start_unix, end_unix, force, torque, offset)
+└── metadata.json      # 실험 컨텍스트
+```
+
+`tools/data/` 는 `.gitignore` 처리 — 데이터는 git에 안 올라가고 각자 관리. 형식 상세는 [tools/data/README.md](tools/data/README.md).
+
+### 8.5 분석 워크플로우 (이 저장소 밖)
+
+권장 도구:
+- **PlotJuggler** — ULog 직접 로드, 라이브/오프라인 시계열 시각화 (`apt install plotjuggler` 또는 AppImage)
+- **pyulog** — Python에서 ULog → pandas DataFrame (`pip install pyulog`)
+- **flight_review** — PX4 공식 웹 기반 로그 분석
+
+분석 코드는 `tools/data/<실험>/` 한 디렉토리를 입력으로 받아:
+1. `flight.ulg` 에서 필요 토픽 추출
+2. `disturbance.tsv` 의 외란 시점을 ULog 시간축으로 변환 (8.2 / data README 참조)
+3. 원하는 지표 (위치 편차, 자세 excursion, 회복 시간, RMS 등) 계산·시각화
+
+> 이 단계는 의도적으로 SITL 저장소와 분리. 제어기 비교·튜닝 시 분석 코드만 독립적으로 발전시킬 수 있다.
+
+---
+
+## 9. Troubleshooting (시행착오 로그)
 
 셋업·개발 과정에서 실제 발생한 문제와 해결 내역입니다. 동일한 함정에 다시 빠지지 않기 위해 기록합니다.
 
@@ -839,7 +929,7 @@ S550 SDF를 typhoon_h480에서 분기(이름만 치환) 후 빌드:
 
 ---
 
-## 9. 다음 단계
+## 10. 다음 단계
 
 - [x] Step 1 — 시스템 의존성 확인 및 설치
 - [x] Step 2 — PX4-Autopilot v1.14.4 클론 + 서브모듈
@@ -852,13 +942,16 @@ S550 SDF를 typhoon_h480에서 분기(이름만 치환) 후 빌드:
 - [x] Step 9 — **외란 입력 도구 Phase 1** — disturbance_plugin 빌드, `apply_disturbance.py` 단일 publish + duration → plugin이 매 physics step force 적용
 - [x] Step 10 — **외란 입력 도구 Phase 2** — cone-tipped 화살표, 드론에 부착되어 매 step 추적 (factory spawn + SetWorldPose)
 - [x] Step 11 — `s550.world` 추가 (단순 회색 ground)
-- [ ] Step 12 — **외란 입력 도구 Phase 3** — 응답 로깅·시각화 (PlotJuggler 라이브 + matplotlib ULog 후처리)
-- [ ] Step 13 — **외란 입력 도구 Phase 4** — 통합 시나리오 스크립트 (takeoff→호버→외란→로그→착륙 자동화)
-- [ ] (이후) S550 지상 진동 해소, mesh S550 사양으로 교체, 소방 페이로드/센서 추가, MAVSDK 미션, ROS 2 px4_ros_com 브리지 등
+- [x] Step 12 — **실험 데이터 기록** — `record_experiment.py` (ULog 스냅샷 + 외란 TSV + metadata.json), `tools/data/` 구조 (8장)
+- [ ] Step 13 — **랜덤 외란 지원** — disturbance_plugin에 Gaussian noise 추가 (water spray 모사: 평균 force + 대역제한 jitter)
+- [ ] Step 14 — **베이스라인 측정** — default PX4의 step/random 외란 응답 정량화 (분석은 별도 코드)
+- [ ] Step 15 — **외란 보상 제어기** — DOB / 적분기 튜닝 / ADRC 등 (별도 세션, 접근 미정)
+- [ ] Step 16 — 통합 시나리오 스크립트 (takeoff→호버→외란→로그→착륙 자동화)
+- [ ] (이후) S550 지상 진동 해소, mesh S550 사양으로 교체, 소방 페이로드/센서 추가, ROS 2 px4_ros_com 브리지 등
 
 ---
 
-## 10. 참고 자료
+## 11. 참고 자료
 
 - PX4 v1.14 공식 문서: https://docs.px4.io/v1.14/
 - PX4 SITL Gazebo Classic: https://docs.px4.io/v1.14/en/sim_gazebo_classic/
