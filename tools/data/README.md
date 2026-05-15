@@ -11,9 +11,10 @@ data/
 ├── README.md
 ├── .gitignore
 └── <YYYYMMDD>T<HHMMSS>_<experiment_name>/
-    ├── flight.ulg         # PX4 ULog 스냅샷 (실험 종료 시점까지의 SITL 세션)
-    ├── disturbance.tsv    # apply_disturbance.py 출력. 외란 이벤트 1줄/회
-    └── metadata.json      # 실험 컨텍스트 (이름, 외란 파라미터, controller 버전, 메모)
+    ├── flight.ulg                # PX4 ULog 스냅샷 (실험 종료 시점까지의 SITL 세션)
+    ├── disturbance.tsv           # apply_disturbance.py 출력. 외란 1개당 1줄
+    ├── disturbance_profiles.json # 사용한 외란 프로파일 JSON 사본 (재현용)
+    └── metadata.json             # 실험 컨텍스트 (이름, 외란 목록, controller 버전, 메모)
 ```
 
 ## 파일 형식
@@ -29,34 +30,40 @@ PX4 ULog v1 binary. `pyulog` 또는 `PlotJuggler` 로 읽음. SITL 세션 시작
 - `ekf2_innovations` — EKF residual
 
 ### `disturbance.tsv`
-탭 구분 텍스트. 한 줄 = 외란 인가 한 회. 컬럼:
+탭 구분 텍스트. `#` 로 시작하는 첫 줄은 헤더. **한 줄 = 외란 1개** (JSON 프로파일의 `disturbances` 배열 항목 1개에 대응). 컬럼:
 
 | 컬럼 | 의미 |
 |---|---|
-| `start_unix` | 외란 시작 unix epoch (float, 초) |
-| `end_unix` | 외란 종료 unix epoch (float, 초) |
-| `force` | "Fx,Fy,Fz" (N, body frame) |
-| `torque` | "Tx,Ty,Tz" (N·m, body frame) |
+| `name` | 외란 이름 (JSON `name`) |
+| `frame` | `body` 또는 `global` |
+| `start_unix` | 외란 시작 unix epoch (float, 초) = 트리거 송신 시각 + `start_time` |
+| `end_unix` | 외란 종료 unix epoch (float, 초) = `start_unix` + `duration` |
+| `tau` | OU 상관시간 (s) |
+| `force_mean` | "x,y,z" (N) — OU 평균 |
+| `force_stddev` | "x,y,z" (N) — OU 정상상태 표준편차 |
+| `torque_mean` | "x,y,z" (N·m) |
+| `torque_stddev` | "x,y,z" (N·m) |
 | `offset` | "x,y,z" (m, body frame, force 인가점) |
+
+> `start_unix` 은 트리거 메시지 송신 시각 기준이다. 플러그인의 타임라인 0점(메시지 수신 시각)과는 sub-ms 수준 latency 차이가 있으나 SITL lockstep 에서는 무시 가능.
+
+### `disturbance_profiles.json`
+실험에 사용한 외란 프로파일 JSON 의 사본. 스키마는 `tools/disturbance_profiles.json` 의 `_schema` / `_frame_convention` 주석 참조.
 
 ### `metadata.json`
 ```json
 {
-  "experiment_name": "step_30N_x",
+  "experiment_name": "baseline_gust",
   "timestamp": "20260514T153021",
   "wall_time_start_unix": 1747...,
   "wall_time_end_unix":   1747...,
   "px4_log_source": "PX4-Autopilot/build/.../rootfs/log/2026-05-14/15_30_15.ulg",
   "model": "s550",
   "controller": "default_PX4_v1.14.4",
-  "disturbance": {
-    "type": "pulse",
-    "force_N": [30.0, 0.0, 0.0],
-    "torque_Nm": [0.0, 0.0, 0.0],
-    "offset_m": [0.0, 0.0, 0.0],
-    "duration_s": 1.0
-  },
-  "notes": "Baseline. 약 5m 호버 후 X 방향 30N 1초 펄스."
+  "profile_file": "disturbance_profiles.json",
+  "disturbances": [ ... 사용한 프로파일의 disturbances 배열 그대로 ... ],
+  "settle_s": 5.0,
+  "notes": "측풍 + 분사 반발력 동시 인가."
 }
 ```
 

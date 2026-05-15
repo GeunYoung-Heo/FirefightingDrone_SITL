@@ -5,18 +5,20 @@
 
 3x3 plot:
   Row 1 [궤적]  top(E-N)    front(E-Alt)   side(N-Alt)   — 무지개 색상 (시간 흐름)
-  Row 2 [위치]  x vs t      y vs t          alt vs t      — 외란 시점 점선
-  Row 3 [자세]  roll vs t   pitch vs t      yaw vs t      — 외란 시점 점선
+  Row 2 [위치]  x vs t      y vs t          alt vs t      — 외란 구간 음영
+  Row 3 [자세]  roll vs t   pitch vs t      yaw vs t      — 외란 구간 음영
 
-- 시간창: [외란 시작 -3s, 외란 종료 +3s]
-- 시간축: 외란 시작 = t=0 (상대 시간)
+- disturbance.tsv 의 **모든 외란**을 각각 색깔 있는 음영 구간으로 표시
+  (색상은 plugin 화살표 팔레트와 동일 순서).
+- 시간창: [가장 이른 외란 시작 -3s, 가장 늦은 외란 종료 +3s]
+- 시간축: 첫 외란 시작 = t=0 (상대 시간)
 - 좌표: PX4 NED 기준. x=North, y=East, alt=-z(위가 양수). 자세는 도(°).
 - source 'both'(기본): Row1 궤적은 ground truth, Row2/3는 실측(solid)+추정(dashed) 오버레이
 
 사용 예:
-  ./plot_experiment.py tools/data/20260514T134734_test_30N_x
+  ./plot_experiment.py tools/data/20260514T134734_baseline_gust
   ./plot_experiment.py tools/data/<exp> --source groundtruth --no-show
-  ./plot_experiment.py tools/data/<exp> --cmap rainbow --event 0
+  ./plot_experiment.py tools/data/<exp> --cmap rainbow
 
 전제: pyulog 설치됨 (pip3 install --user pyulog)
 """
@@ -39,8 +41,14 @@ from matplotlib.collections import LineCollection
 from matplotlib.ticker import MultipleLocator
 
 
-PRE_S = 3.0    # 외란 시작 전 표시 구간 (s)
-POST_S = 3.0   # 외란 종료 후 표시 구간 (s)
+PRE_S = 3.0    # 가장 이른 외란 시작 전 표시 구간 (s)
+POST_S = 3.0   # 가장 늦은 외란 종료 후 표시 구간 (s)
+
+# disturbance_plugin.cc 의 kArrowColors 와 동일 — 화살표와 plot 음영 색상 일치
+DIST_COLORS = [
+    (1.00, 0.10, 0.10), (0.15, 0.45, 1.00), (0.15, 0.85, 0.20),
+    (1.00, 0.65, 0.00), (0.75, 0.20, 1.00), (0.00, 0.85, 0.85),
+]
 
 
 # ---------- ULog helpers ----------
@@ -218,9 +226,8 @@ def plot_trajectory(ax, xs, ys, t_rel, cmap, xlabel, ylabel, title):
     return lc
 
 
-def plot_timeseries(ax, gt, est, key, t0_ulog, dist_start_rel, dist_end_rel,
-                    ylabel, title):
-    """시계열 plot. gt(solid) / est(dashed). 외란 구간 점선·음영."""
+def plot_timeseries(ax, gt, est, key, t0_ulog, ylabel, title):
+    """시계열 plot. gt(solid) / est(dashed). 외란 구간 음영은 별도로 그림."""
     plotted = False
     if gt is not None and len(gt['t']) > 0:
         t_rel = (gt['t'] - t0_ulog) / 1e6
@@ -233,12 +240,7 @@ def plot_timeseries(ax, gt, est, key, t0_ulog, dist_start_rel, dist_end_rel,
                 alpha=0.85, label='estimate')
         plotted = True
 
-    # 외란 인가/해제 시점 표시
-    ax.axvline(dist_start_rel, color='k', linestyle=':', linewidth=1.3)
-    ax.axvline(dist_end_rel, color='k', linestyle=':', linewidth=1.3)
-    ax.axvspan(dist_start_rel, dist_end_rel, color='gray', alpha=0.12)
-
-    ax.set_xlabel('time since disturbance start [s]')
+    ax.set_xlabel('time since first disturbance start [s]')
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.grid(True, alpha=0.3)
@@ -249,25 +251,54 @@ def plot_timeseries(ax, gt, est, key, t0_ulog, dist_start_rel, dist_end_rel,
                 ha='center', va='center', color='gray')
 
 
+def draw_disturbance_regions(ax, regions, label=False):
+    """외란 구간 음영 + 시작/종료 점선. regions: [(name, start_rel, end_rel, color)].
+
+    label=True 면 각 구간 시작선 옆에 외란 이름을 세로로 표기.
+    """
+    for _name, s_rel, e_rel, color in regions:
+        ax.axvspan(s_rel, e_rel, color=color, alpha=0.12)
+        ax.axvline(s_rel, color=color, linestyle=':', linewidth=1.3)
+        ax.axvline(e_rel, color=color, linestyle=':', linewidth=1.1, alpha=0.7)
+    if label:
+        trans = ax.get_xaxis_transform()  # x=데이터 좌표, y=축 비율
+        for name, s_rel, _e_rel, color in regions:
+            ax.text(s_rel, 0.98, ' ' + name, rotation=90, va='top', ha='left',
+                    fontsize=7, color=color, alpha=0.95, transform=trans)
+
+
 # ---------- disturbance.tsv ----------
 
-def parse_disturbance_tsv(path, event_index):
-    lines = [l for l in path.read_text().splitlines() if l.strip()]
-    if not lines:
-        sys.exit(f"{path} 가 비어있음 — 외란 이벤트 기록 없음")
-    if event_index < 0 or event_index >= len(lines):
-        sys.exit(f"--event {event_index} 범위 초과 (disturbance.tsv 총 {len(lines)} 행)")
-    if len(lines) > 1:
-        print(f"[plot] disturbance.tsv 에 {len(lines)} 개 이벤트 — "
-              f"{event_index} 번째 사용 (--event 로 변경)")
-    parts = lines[event_index].split('\t')
-    return {
-        'start_unix': float(parts[0]),
-        'end_unix': float(parts[1]),
-        'force': parts[2] if len(parts) > 2 else '?',
-        'torque': parts[3] if len(parts) > 3 else '?',
-        'offset': parts[4] if len(parts) > 4 else '?',
-    }
+def parse_disturbance_tsv(path):
+    """disturbance.tsv 의 모든 외란 행을 dict 리스트로 반환 ('#' 헤더는 무시).
+
+    컬럼: name, frame, start_unix, end_unix, tau,
+          force_mean, force_stddev, torque_mean, torque_stddev, offset
+    """
+    rows = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = line.split('\t')
+        if len(parts) < 4:
+            continue
+        d = {
+            'name': parts[0],
+            'frame': parts[1],
+            'start_unix': float(parts[2]),
+            'end_unix': float(parts[3]),
+            'tau': float(parts[4]) if len(parts) > 4 else None,
+            'force_mean': parts[5] if len(parts) > 5 else '?',
+            'force_stddev': parts[6] if len(parts) > 6 else '?',
+            'torque_mean': parts[7] if len(parts) > 7 else '?',
+            'torque_stddev': parts[8] if len(parts) > 8 else '?',
+            'offset': parts[9] if len(parts) > 9 else '?',
+        }
+        rows.append(d)
+    if not rows:
+        sys.exit(f"{path} 에 외란 이벤트가 없음")
+    return rows
 
 
 # ---------- main ----------
@@ -281,8 +312,6 @@ def main():
     p.add_argument('exp_dir', help='실험 디렉토리 (flight.ulg / disturbance.tsv / metadata.json 포함)')
     p.add_argument('--source', choices=['both', 'groundtruth', 'estimate'],
                    default='both', help='plot 대상 데이터 (default: both)')
-    p.add_argument('--event', type=int, default=0,
-                   help='disturbance.tsv 의 이벤트 행 인덱스 (default: 0)')
     p.add_argument('--cmap', default='turbo',
                    help='궤적 colormap (default: turbo). rainbow/jet/viridis 등 가능')
     p.add_argument('--save', action='store_true',
@@ -307,7 +336,7 @@ def main():
 
     # --- load ---
     ulog = ULog(str(ulg_path))
-    dist = parse_disturbance_tsv(tsv_path, args.event)
+    disturbances = parse_disturbance_tsv(tsv_path)
     meta = {}
     if meta_path.exists():
         try:
@@ -321,20 +350,30 @@ def main():
         sys.exit("ULog 에서 GPS UTC 시간을 못 찾음 — 외란 시점을 ULog 시간축에 정렬 불가.\n"
                  "vehicle_gps_position 토픽이 로깅되는지 확인 필요.")
 
-    t_dist_start = to_ulog(dist['start_unix'])
-    t_dist_end = to_ulog(dist['end_unix'])
-    win_start = t_dist_start - PRE_S * 1e6
-    win_end = t_dist_end + POST_S * 1e6
+    # 시간 0점 = 가장 이른 외란 시작. 시간창 = [첫 시작 -PRE, 마지막 종료 +POST].
+    earliest_start_unix = min(d['start_unix'] for d in disturbances)
+    latest_end_unix = max(d['end_unix'] for d in disturbances)
+    t_ref = to_ulog(earliest_start_unix)              # ULog us, t=0 기준점
+    t_last_end = to_ulog(latest_end_unix)
+    win_start = t_ref - PRE_S * 1e6
+    win_end = t_last_end + POST_S * 1e6
+
+    # 각 외란을 (name, start_rel, end_rel, color) 로 — 색은 plugin 화살표와 동일 순서
+    regions = []
+    for i, d in enumerate(disturbances):
+        s_rel = (to_ulog(d['start_unix']) - t_ref) / 1e6
+        e_rel = (to_ulog(d['end_unix']) - t_ref) / 1e6
+        regions.append((d['name'], s_rel, e_rel, DIST_COLORS[i % len(DIST_COLORS)]))
+
+    print(f"[plot] {len(disturbances)} disturbance(s): "
+          + ", ".join(f"{n}[{s:.1f}~{e:.1f}s]" for n, s, e, _ in regions))
 
     # ULog 데이터 범위와 sanity check
     u0, u1 = ulog.start_timestamp, ulog.last_timestamp
-    if t_dist_start < u0 or t_dist_end > u1:
+    if t_ref < u0 or t_last_end > u1:
         print(f"[plot] WARN: 외란 시점이 ULog 범위 밖일 수 있음 "
-              f"(외란 {t_dist_start/1e6:.1f}~{t_dist_end/1e6:.1f}s vs "
+              f"(외란 {t_ref/1e6:.1f}~{t_last_end/1e6:.1f}s vs "
               f"ULog {u0/1e6:.1f}~{u1/1e6:.1f}s). GPS 시간 매핑 확인 권장.")
-
-    dist_start_rel = 0.0
-    dist_end_rel = (t_dist_end - t_dist_start) / 1e6
 
     # --- extract & clip ---
     pos_gt = extract_pos(ulog, groundtruth=True)
@@ -372,18 +411,16 @@ def main():
                              constrained_layout=True)
 
     # suptitle
-    force = meta.get('disturbance', {}).get('force_N', dist['force'])
-    dur = meta.get('disturbance', {}).get('duration_s')
     exp_name = meta.get('experiment_name', exp_dir.name)
     ctrl = meta.get('controller', '?')
-    suptitle = (f"{exp_name}  |  force={force} N  "
-                f"|  duration={dur if dur is not None else 'sustained'} s  "
+    names = ", ".join(d['name'] for d in disturbances)
+    suptitle = (f"{exp_name}  |  {len(disturbances)} disturbance(s): {names}  "
                 f"|  controller={ctrl}")
     fig.suptitle(suptitle, fontsize=13, fontweight='bold')
 
     # ----- Row 1: 궤적 (rainbow) -----
     if traj is not None and len(traj['t']) >= 2:
-        t_rel_traj = (traj['t'] - t_dist_start) / 1e6
+        t_rel_traj = (traj['t'] - t_ref) / 1e6
         N, E, Alt = traj['x'], traj['y'], traj['alt']
         lc1 = plot_trajectory(axes[0, 0], E, N, t_rel_traj, args.cmap,
                               'East [m]', 'North [m]', f'Top view ({traj_label})')
@@ -395,7 +432,7 @@ def main():
             # colorbar를 Row 1 세 축 전체에 붙임 (axes[0,2]에만 붙이면
             # 그 plot만 colorbar 자리만큼 작아진다). 셋이 동일하게 줄어듦.
             cb = fig.colorbar(lc1, ax=list(axes[0]), fraction=0.02, pad=0.02)
-            cb.set_label('time since disturbance start [s]')
+            cb.set_label('time since first disturbance start [s]')
         # Row 1 의 6개 축을 동일 scale 로 통일.
         # 범위 길이(span)를 최대값으로 맞춰 — 어느 축 방향 변위가 큰지 직접 비교 가능.
         result = unify_trajectory_axes([axes[0, 0], axes[0, 1], axes[0, 2]],
@@ -410,20 +447,26 @@ def main():
                             va='center', transform=axes[0, j].transAxes, color='gray')
 
     # ----- Row 2: x, y, alt vs time -----
-    plot_timeseries(axes[1, 0], pos_gt, pos_est, 'x', t_dist_start,
-                    dist_start_rel, dist_end_rel, 'x — North [m]', 'X position')
-    plot_timeseries(axes[1, 1], pos_gt, pos_est, 'y', t_dist_start,
-                    dist_start_rel, dist_end_rel, 'y — East [m]', 'Y position')
-    plot_timeseries(axes[1, 2], pos_gt, pos_est, 'alt', t_dist_start,
-                    dist_start_rel, dist_end_rel, 'altitude (-z) [m]', 'Z position (altitude)')
+    plot_timeseries(axes[1, 0], pos_gt, pos_est, 'x', t_ref,
+                    'x — North [m]', 'X position')
+    plot_timeseries(axes[1, 1], pos_gt, pos_est, 'y', t_ref,
+                    'y — East [m]', 'Y position')
+    plot_timeseries(axes[1, 2], pos_gt, pos_est, 'alt', t_ref,
+                    'altitude (-z) [m]', 'Z position (altitude)')
 
     # ----- Row 3: roll, pitch, yaw vs time -----
-    plot_timeseries(axes[2, 0], att_gt, att_est, 'roll', t_dist_start,
-                    dist_start_rel, dist_end_rel, 'roll [deg]', 'Roll')
-    plot_timeseries(axes[2, 1], att_gt, att_est, 'pitch', t_dist_start,
-                    dist_start_rel, dist_end_rel, 'pitch [deg]', 'Pitch')
-    plot_timeseries(axes[2, 2], att_gt, att_est, 'yaw', t_dist_start,
-                    dist_start_rel, dist_end_rel, 'yaw [deg]', 'Yaw')
+    plot_timeseries(axes[2, 0], att_gt, att_est, 'roll', t_ref,
+                    'roll [deg]', 'Roll')
+    plot_timeseries(axes[2, 1], att_gt, att_est, 'pitch', t_ref,
+                    'pitch [deg]', 'Pitch')
+    plot_timeseries(axes[2, 2], att_gt, att_est, 'yaw', t_ref,
+                    'yaw [deg]', 'Yaw')
+
+    # ----- 외란 구간 음영: Row 2/3 의 6개 시계열 축 모두에 -----
+    # 이름 라벨은 Row 2 (위치) 에만 — Row 3 는 음영/점선만 (수직선이 정렬되어 보임)
+    for j in range(3):
+        draw_disturbance_regions(axes[1, j], regions, label=True)
+        draw_disturbance_regions(axes[2, j], regions, label=False)
 
     # layout은 constrained_layout (plt.subplots에서 활성화) 가 자동 처리.
 

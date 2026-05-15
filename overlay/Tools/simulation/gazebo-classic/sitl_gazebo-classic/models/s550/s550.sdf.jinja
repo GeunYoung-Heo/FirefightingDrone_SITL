@@ -1163,11 +1163,10 @@
       <accelerometerTurnOnBiasSigma>0.196</accelerometerTurnOnBiasSigma>
     </plugin>
 
-    <!-- 외란 인가용 플러그인. 마지막 받은 Wrench 메시지를 매 physics step에서
-         base_link에 적용. 화살표 시각화는 apply_disturbance.py가 별도 모델
-         (disturbance_arrow)을 spawn하는 방식으로 처리 — Gazebo Classic의
-         ModelPlugin → Visual msg 적용 한계 회피.
-         자세한 내용은 tools/disturbance_plugin/README.md 참조. -->
+    <!-- 외란 인가용 플러그인. JSON 외란 프로파일(GzString)을 수신해 타임라인을
+         재생: 매 physics step OU 확률 force/torque를 base_link에 적용하고,
+         외란별 화살표 모델을 spawn/track/despawn 한다.
+         외란 정의는 tools/disturbance_profiles.json, 자세한 내용은 README §7 참조. -->
     <plugin name="disturbance" filename="libdisturbance_plugin.so">
       <link_name>base_link</link_name>
     </plugin>

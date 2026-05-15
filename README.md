@@ -48,9 +48,11 @@ S550 헥사콥터를 PX4 SITL + Gazebo Classic 환경에서 시뮬레이션하�
 │   └── src/modules/simulation/simulator_mavlink/
 │       └── sitl_targets_gazebo-classic.cmake   # s550 항목 추가된 수정본
 │
-├── tools/                   # 외란 테스트 + 데이터 기록 도구 (7~8장 참조)
-│   ├── apply_disturbance.py # CLI — Wrench 메시지 publish (pulse/sustained/stop)
-│   ├── record_experiment.py # 외란 인가 + ULog 스냅샷 + metadata 저장 (8장)
+├── tools/                   # 외란 테스트 + 데이터 기록 + 시각화 도구 (7~8장 참조)
+│   ├── disturbance_profiles.json # 외란 타임라인 정의 (외란별 mean/stddev/frame/τ)
+│   ├── apply_disturbance.py # CLI — JSON 프로파일을 GzString으로 트리거 publish
+│   ├── record_experiment.py # 외란 트리거 + ULog 스냅샷 + metadata 저장 (8장)
+│   ├── plot_experiment.py   # 실험 디렉토리 → 3×3 분석 plot (궤적/위치/자세, 8.5장)
 │   ├── data/                # 실험 데이터 (gitignore — .gitignore와 README.md만 추적)
 │   │   ├── .gitignore
 │   │   └── README.md        # 데이터 형식·시간축 정렬 가이드
@@ -107,15 +109,14 @@ QGC가 자동으로 UDP 14550으로 PX4 SITL에 연결됩니다. pxh 프롬프�
 3. 3.1 ~ 3.4 셋업 (PX4 clone, ubuntu.sh, Gazebo Classic 복구)
 4. **3.6 `./apply_overlay.sh` 실행** ← S550 커스터마이징 적용
 5. 3.5 QGroundControl AppImage 설치
-6. **7.3 disturbance_plugin 빌드** ← 외란 테스트 도구 (선택, 외란 실험 시 필요)
+6. **7.4 disturbance_plugin 빌드** ← 외란 테스트 도구 (선택, 외란 실험 시 필요)
 7. `./run_sitl.sh s550` 실행
 
-**외란 테스트 — 호버 중인 SITL에 step force 인가:**
+**외란 테스트 — 호버 중인 SITL에 JSON 프로파일 외란 인가:**
 ```bash
-./tools/apply_disturbance.py --force "30 0 0" --duration 1.0    # 1초 펄스
-./tools/apply_disturbance.py --force "10 0 0" --sustained        # 지속 (Ctrl+C로 중단)
+./tools/apply_disturbance.py    # tools/disturbance_profiles.json 타임라인 트리거
 ```
-빨간 화살표가 드론에 부착되어 force 방향·크기를 보여주고, PX4 위치 제어기의 외란 거부 거동을 관찰할 수 있습니다. 자세한 내용은 7장 참조.
+외란 내용은 `tools/disturbance_profiles.json` 을 편집해서 정의합니다 (외란별 평균·표준편차·frame·시작/지속 시간). 외란마다 색깔 있는 화살표가 드론에 부착되어 평균 force 방향을 보여주고, PX4 위치 제어기의 외란 거부 거동을 관찰할 수 있습니다. 자세한 내용은 7장 참조.
 
 ---
 
@@ -546,42 +547,70 @@ SDF의 `<zero_position_disarmed>0</zero_position_disarmed>`가 disarmed 상태�
 
 ## 7. 외란 테스트 도구 (Disturbance Testing)
 
-S550 위치 제어기의 외란 거부 강건성을 평가하기 위한 도구. 호버 중인 드론의 base_link에 임의의 force/torque를 인가하고, 화살표로 시각화한다.
+S550 위치 제어기의 외란 거부 강건성을 평가하기 위한 도구. **JSON 프로파일**로 외란 타임라인을 정의하면, 플러그인이 호버 중인 드론에 OU(Ornstein-Uhlenbeck) 확률 force/torque를 인가하고 외란별 화살표로 시각화한다.
 
 ### 7.1 구성 요소
 
 | 컴포넌트 | 역할 |
 |---|---|
-| `tools/disturbance_plugin/disturbance_plugin.cc` | Gazebo Classic ModelPlugin. Wrench 메시지 수신 → 매 physics step base_link에 force/torque 적용 + 화살표 모델 spawn/track/despawn |
+| `tools/disturbance_profiles.json` | 외란 타임라인 정의 파일. 외란별 평균·표준편차·상관시간·frame·시작시각·지속시간 |
+| `tools/disturbance_plugin/disturbance_plugin.cc` | Gazebo Classic ModelPlugin. JSON(GzString) 수신 → 타임라인 재생: 매 physics step OU 외란 적용 + 외란별 화살표 spawn/track/despawn |
 | `tools/disturbance_plugin/disturbance_arrow_assets/` | 화살표 끝(cone) mesh 자원: `meshes/cone.stl` (16 segments) + `model.config` (Gazebo `model://` URI 인식용) |
-| `tools/apply_disturbance.py` | CLI. Wrench 메시지를 PX4-Gazebo로 publish (시작 1회 + 종료 zero 1회). 화살표는 플러그인이 알아서 처리 |
+| `tools/apply_disturbance.py` | CLI. JSON 프로파일을 읽어 GzString 1회 publish 로 플러그인 타임라인을 트리거. 외란 이벤트를 TSV 로 기록 |
 | `overlay/.../worlds/s550.world` | s550 전용 world. `empty.world` 의 어두운 asphalt_plane 제거, 단순한 회색 평면으로 대체 |
 
 ### 7.2 왜 plugin인가 (설계 근거)
 
-Gazebo Classic의 표준 `<link>/wrench` 토픽은 publish 1회당 1 physics step(약 1ms) 만 force가 적용된다. `gz topic -p`를 외부에서 루프로 돌리면 호출당 약 400ms 오버헤드가 있어 효과적 duty cycle이 0.6% 수준에 그쳐 외란 강도가 무의미하다. 플러그인 내부에서 마지막에 받은 wrench 값을 매 step 자동 적용하면 단 한 번의 publish로 충분하다.
+Gazebo Classic의 표준 `<link>/wrench` 토픽은 publish 1회당 1 physics step(약 1ms) 만 force가 적용된다. `gz topic -p`를 외부에서 루프로 돌리면 호출당 약 400ms 오버헤드가 있어 효과적 duty cycle이 0.6% 수준에 그쳐 외란 강도가 무의미하다. 플러그인 내부에서 매 step 외란을 계산·적용하면 단 한 번의 트리거 publish로 충분하다. OU 노이즈도 매 step 적분이 필요하므로 플러그인 내부 처리가 필수다.
 
 화살표 시각화도 플러그인 내부에서 처리한다:
-- 외란 시작 시 `~/factory`로 cone-tipped arrow 모델 spawn
+- 외란 활성화 시 `~/factory`로 cone-tipped arrow 모델 spawn (외란마다 1개, 색상 구분)
 - 매 physics step `Model::SetWorldPose`로 드론 world pose에 맞춰 갱신 → 드론이 움직이면 화살표도 따라감
-- 외란 종료 시 `~/request` (entity_delete cmd)로 despawn
+- 외란 비활성화 시 `~/request` (entity_delete cmd)로 despawn
 
 > **참고:** `~/visual` 토픽으로 Visual 메시지를 publish해 기존 visual의 scale/pose를 동적으로 갱신하는 방법은 Gazebo Classic 11에서 ModelPlugin 발신 시 일관되게 동작하지 않는다 (Scene이 id 기반 lookup을 함). 별도 모델 spawn + SetWorldPose 방식이 안정적.
 
-### 7.3 빌드
+### 7.3 외란 프로파일 JSON
+
+`tools/disturbance_profiles.json` 이 외란 타임라인을 정의한다. 각 외란은 OU 과정으로, **평균(mean)** 주변을 **표준편차(stddev)** 폭으로, **상관시간(correlation_time, τ)** 의 시간 척도로 변동하는 force/torque다.
+
+```jsonc
+{
+  "disturbances": [
+    {
+      "name": "side_gust",          // 식별 이름 (화살표 라벨 / TSV 행 이름)
+      "frame": "global",            // "body"(FLU) 또는 "global"(ENU) — §7.7 참조
+      "start_time": 5.0,            // 트리거 0점 기준 시작 시각 (s)
+      "duration": 8.0,              // 지속 시간 (s). 활성 구간 = [start, start+duration]
+      "force":  { "mean": [0,3,0], "stddev": [0.5,1.0,0.3] },  // N
+      "torque": { "mean": [0,0,0], "stddev": [0,0,0] },        // N·m
+      "offset": [0.0, 0.0, 0.0],    // force 인가점 (m, 항상 body FLU)
+      "correlation_time": 1.5       // OU τ (s). 작을수록 white, 클수록 느린 변동
+    }
+  ]
+}
+```
+
+- **OU 정확 이산화**: `α = exp(−dt/τ)`, `β = √(1−α²)`, `F[k+1] = mean + (F[k]−mean)·α + stddev·β·N(0,1)`. τ→0 이면 white noise, 모든 τ>0 에서 안정. `stddev` 는 정상상태 표준편차.
+- **타임라인 0점** = 플러그인이 트리거 메시지를 받은 sim time. 외란은 각자 `[start_time, start_time+duration]` 구간에 활성화되며, 겹치면 합산된다.
+- **다중 외란**: 배열에 여러 개 정의 가능. 예시 파일은 측풍(global)·분사 반발력(body)·하강기류(global) 3종이 일부 시간 겹치도록 구성.
+- 파일 상단의 `_schema` / `_frame_convention` 주석에 전체 필드 설명이 있다.
+
+### 7.4 빌드
 
 ```bash
 cd ~/Firefighting_Drone/SITL/tools/disturbance_plugin
-mkdir -p build && cd build
+rm -rf build && mkdir build && cd build
 cmake ..
 make -j$(nproc)
 ```
 
 산출물: `build/libdisturbance_plugin.so`. `run_sitl.sh`가 자동으로 `GAZEBO_PLUGIN_PATH`에 prepend.
 
-> `libgazebo-dev`가 필요. 3.4절에서 이미 설치됨.
+> 의존성: `libgazebo-dev` (3.4절에서 설치됨) + `libjsoncpp-dev`. jsoncpp 미설치 시 `cmake ..` 가 `pkg_check_modules(JSONCPP REQUIRED jsoncpp)` 에서 실패한다 → `sudo apt install libjsoncpp-dev`.
+> 플러그인 소스/CMake 를 바꿨으므로 기존 `build/` 는 지우고 새로 빌드할 것.
 
-### 7.4 SDF 등록 (이미 overlay에 반영됨)
+### 7.5 SDF 등록 (이미 overlay에 반영됨)
 
 `s550.sdf.jinja`의 `</model>` 직전에 다음 블록이 있다:
 
@@ -596,58 +625,66 @@ make -j$(nproc)
 | 파라미터 | 기본값 | 의미 |
 |---|---|---|
 | `<link_name>` | `base_link` | force/torque를 적용할 link |
-| `<topic_name>` | `/gazebo/<world>/<model>/disturbance_cmd` | Wrench 수신 토픽 |
+| `<topic_name>` | `/gazebo/<world>/<model>/disturbance_json` | JSON(GzString) 수신 토픽 |
 | `<enable_arrow>` | `true` | 화살표 시각화 on/off |
-| `<arrow_scale_factor>` | `0.05` | 길이/N — 예: 30N → 1.5m |
+| `<arrow_scale_factor>` | `0.05` | 길이/N — 외란의 **평균 force** 크기 기준. 예: 평균 30N → 1.5m |
 | `<arrow_max_length>` | `2.0` | 길이 cap (m) |
 | `<arrow_radius>` | `0.03` | shaft 반경 (m). cone head 반경은 shaft × 3 |
 
-### 7.5 사용법
+### 7.6 사용법
 
 (SITL 부팅 + `pxh> commander takeoff` + EKF 안정화 30초 대기 후, 새 터미널에서)
 
 ```bash
 cd ~/Firefighting_Drone/SITL
 
-# 1초 펄스, X축 양방향 30N
-./tools/apply_disturbance.py --force "30 0 0" --duration 1.0
+# 기본 프로파일(tools/disturbance_profiles.json) 트리거 — 타임라인 끝까지 블록
+./tools/apply_disturbance.py
 
-# Y축 / Z축
-./tools/apply_disturbance.py --force "0 30 0" --duration 1.0
-./tools/apply_disturbance.py --force "0 0 -30" --duration 1.0     # 아래쪽 push
+# 다른 프로파일 + 외란 이벤트를 TSV 로 기록
+./tools/apply_disturbance.py --profiles my_profile.json --log /tmp/disturbance.tsv
 
-# 인가점 offset (CoG에서 떨어진 곳 → 자연스러운 토크 동반)
-./tools/apply_disturbance.py --force "20 0 0" --offset "0 0.2 0" --duration 0.5
-
-# Sustained 외란 (바람 결의 시나리오), Ctrl+C로 중단
-./tools/apply_disturbance.py --force "10 0 0" --sustained
-
-# 명시적 외력 해제 (sustained 중단 후 잔여 force 정리 등)
-./tools/apply_disturbance.py --stop
-
-# 외란 timestamp 기록 (추후 ULog 분석과 동기용)
-./tools/apply_disturbance.py --force "30 0 0" --duration 1.0 \
-    --log ~/Firefighting_Drone/SITL/tools/disturbance_log.tsv
+# 트리거만 하고 즉시 종료 (타임라인은 sim 안에서 계속 진행)
+./tools/apply_disturbance.py --no-wait
 ```
 
-### 7.6 좌표계 — Body frame
+외란 내용은 명령행 인자가 아니라 **JSON 파일을 편집**해서 바꾼다 (§7.3). 실험 단위 기록·분석은 §8 참조.
 
-`AddLinkForce` / `AddRelativeTorque`로 적용하므로 **body frame (드론 자세 기준)** — 드론이 기울면 force 방향도 같이 기운다.
+### 7.7 좌표계 규약 (Frame Convention)
 
-화살표는 force를 world frame으로 변환해 표시하므로, 실제 미는 방향을 정확히 보여준다. 드론이 기울면 화살표도 같이 회전한다.
+외란 JSON의 각 외란은 `frame` 필드로 `body` 또는 `global` 중 하나를 지정한다. **JSON에 적는 force/torque/offset 벡터는 모두 아래 규약을 따른다.**
 
-World frame 외란(예: 바람처럼 항상 한 방향)이 필요하면 플러그인 코드의 `AddLinkForce` → `AddForceAtRelativePosition`, `AddRelativeTorque` → `AddTorque` 로 교체하고 재빌드.
+| `frame` | 좌표계 | 축 정의 | 용도 예시 |
+|---|---|---|---|
+| `global` | Gazebo 월드 고정 **ENU** | X = 동(East), Y = 북(North), **Z = 위(Up)** | 돌풍, 하강기류 — 항상 월드 기준 한 방향 |
+| `body` | 드론 동체 고정 **FLU** | X = 전방(Forward), Y = 좌(Left), **Z = 상(Up)** | 분사 반발력 — 드론이 기울면 함께 기움 |
 
-### 7.7 화살표 모양 커스터마이즈
+- `global`: 중력이 −Z 이므로 **하강기류(downdraft)는 force Z가 음수**, 상승기류는 양수.
+- `body`: **전방 분사의 반발력은 force X가 음수**. 드론이 롤/피치하면 외란 방향도 같이 회전한다.
+- PX4 펌웨어 내부는 NED를 쓰지만, 이 외란 도구는 Gazebo Link API(`AddForce`/`AddLinkForce`) 위에서 동작하므로 **JSON 입력은 위 ENU/FLU 규약**을 따른다. 혼동 주의.
+
+**`offset` 은 예외 — `frame` 과 무관하게 항상 body(FLU) 좌표.** offset은 "기체 어디에 힘이 작용하는가"라는 물리적 위치(예: 분사 노즐 위치)이므로, `frame` 이 `global` 이어도 base_link 기준으로 해석한다. `frame` 은 force/torque의 *방향*만 결정한다.
+
+플러그인은 `global` 외란을 `AddForceAtWorldPosition`/`AddTorque`, `body` 외란을 `AddLinkForce`/`AddRelativeTorque`로 인가한다. 화살표는 두 경우 모두 force를 world frame으로 변환해 표시하므로 실제 미는 방향을 정확히 보여준다.
+
+### 7.8 화살표 표시 규칙
+
+- 외란마다 **자기 화살표 1개**. 활성 구간 동안만 표시되고, 끝나면 despawn.
+- 화살표 방향 = 그 외란의 **평균 force 방향** (OU 순간값이 아니라 mean). `body` 외란은 드론 자세에 따라 회전, `global` 외란은 월드 고정 방향.
+- 화살표 길이 = `min(|평균 force| × arrow_scale_factor, arrow_max_length)`.
+- 색상은 6색 팔레트를 외란 인덱스 순서로 순환 — `plot_experiment.py` 의 외란 구간 음영 색과 동일하므로, 시뮬 화면의 화살표와 분석 plot 을 색으로 매칭할 수 있다.
+- 평균 force 가 0 인 외란(순수 noise 또는 torque 전용)은 화살표를 그리지 않는다.
+
+### 7.9 화살표 모양 커스터마이즈
 
 `disturbance_plugin.cc`의 `SpawnArrow()` 함수 내부에서 조정 가능:
 - `shaftLen = length * 0.8` / `headLen = length * 0.2` — shaft/head 비율
 - `headR = arrowRadius * 3.0` — head 굵기 (shaft 대비 배수)
-- `<material>` 블록 RGBA — 색상
+- `kArrowColors` 팔레트 — 외란별 색상
 
 수정 후 `make -j$(nproc)` 재빌드 + SITL 재기동으로 반영.
 
-### 7.8 화살표 구조
+### 7.10 화살표 구조
 
 ```
 ┌─────────────────────────────────────┐
@@ -658,17 +695,17 @@ World frame 외란(예: 바람처럼 항상 한 방향)이 필요하면 플러�
 │                                     │
 │  ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━▶  │
 │  ↑                                  │
-│  drone CoG (또는 force_offset)
+│  drone CoG (또는 offset 지점)
 └─────────────────────────────────────┘
 ```
 
-`length = min(|force| × 0.05, 2.0) m` — 외력 크기에 비례. 위 그림의 ━ 부분이 shaft cylinder, ▶ 부분이 cone STL mesh.
+`length = min(|평균 force| × 0.05, 2.0) m` — 평균 외력 크기에 비례. 위 그림의 ━ 부분이 shaft cylinder, ▶ 부분이 cone STL mesh.
 
 ---
 
 ## 8. 실험 데이터 기록 (Logging)
 
-외란 응답을 나중에 분석하기 위해 비행 데이터를 디스크에 저장하는 단계. **시각화·분석은 이 저장소 밖의 별도 코드**에서 수행하고, 여기서는 캡처에만 집중한다.
+외란 응답을 분석하기 위해 비행 데이터를 디스크에 저장하고(8.1~8.4), `plot_experiment.py`로 시각화(8.5)하는 단계. 더 깊은 정량 분석은 외부 도구로 확장한다.
 
 ### 8.1 PX4 ULog — 이미 자동
 
@@ -699,56 +736,57 @@ ULog가 기록하는 토픽 범위는 `SDLOG_PROFILE` 파라미터로 조정 가
 
 ### 8.3 `record_experiment.py` — 실험 단위 스냅샷
 
-[tools/record_experiment.py](tools/record_experiment.py)는 외란 인가 + ULog 스냅샷 + 메타데이터 저장을 한 번에 처리한다.
+[tools/record_experiment.py](tools/record_experiment.py)는 외란 트리거 + ULog 스냅샷 + 메타데이터 저장을 한 번에 처리한다.
 
 **전제**: SITL이 떠 있고 (`./run_sitl.sh s550`) 드론이 호버 중 (`pxh> commander takeoff` + EKF 안정화 30초).
 
 ```bash
 cd ~/Firefighting_Drone/SITL
 
-# 1초 펄스, X 30N — 기본 사용
-./tools/record_experiment.py --name step_30N_x --force "30 0 0" --duration 1.0
+# 기본 프로파일(tools/disturbance_profiles.json)로 실험
+./tools/record_experiment.py --name baseline_gust
 
-# offset + 메모 + settle 길게
-./tools/record_experiment.py --name pulse_off_y --force "20 0 0" \
-    --offset "0 0.2 0" --duration 0.5 --settle 10 \
-    --notes "CoG에서 Y +20cm offset, 비대칭 토크 응답"
-
-# Sustained (Ctrl+C로 외란 종료 → 자동 settle + snapshot)
-./tools/record_experiment.py --name wind_5N --force "5 0 0" --sustained
+# 다른 프로파일 + 메모 + settle 길게
+./tools/record_experiment.py --name spray_test --profiles my_profile.json \
+    --settle 10 --notes "분사 반발력 + 측풍 동시 인가, 비대칭 응답 확인"
 ```
 
 수행 동작:
 1. `tools/data/<timestamp>_<name>/` 디렉토리 생성
-2. `apply_disturbance.py` 호출 (외란 인가 + `disturbance.tsv` 기록)
-3. `--settle` 초 대기 (응답이 ULog에 다 들어가도록)
-4. PX4 `rootfs/log/` 의 최신 `.ulg` → `flight.ulg` 로 복사
-5. `metadata.json` 저장 (외란 파라미터, controller 라벨, 메모 등)
+2. 사용한 프로파일 JSON 을 `disturbance_profiles.json` 으로 사본 저장
+3. `apply_disturbance.py` 호출 (외란 타임라인 트리거 + `disturbance.tsv` 기록, 타임라인 종료까지 블록)
+4. `--settle` 초 대기 (응답이 ULog에 다 들어가도록)
+5. PX4 `rootfs/log/` 의 최신 `.ulg` → `flight.ulg` 로 복사
+6. `metadata.json` 저장 (외란 목록, controller 라벨, 메모 등)
 
 ### 8.4 출력 구조
 
 ```
-tools/data/20260514T153021_step_30N_x/
-├── flight.ulg         # ULog 스냅샷 (SITL 세션 시작 ~ 복사 시점)
-├── disturbance.tsv    # 외란 이벤트 (start_unix, end_unix, force, torque, offset)
-└── metadata.json      # 실험 컨텍스트
+tools/data/20260515T153021_baseline_gust/
+├── flight.ulg                 # ULog 스냅샷 (SITL 세션 시작 ~ 복사 시점)
+├── disturbance.tsv            # 외란 이벤트 (외란당 1행: name/frame/start/end/τ/mean/stddev/offset)
+├── disturbance_profiles.json  # 사용한 외란 프로파일 사본
+└── metadata.json              # 실험 컨텍스트
 ```
 
 `tools/data/` 는 `.gitignore` 처리 — 데이터는 git에 안 올라가고 각자 관리. 형식 상세는 [tools/data/README.md](tools/data/README.md).
 
-### 8.5 분석 워크플로우 (이 저장소 밖)
+### 8.5 분석 — `plot_experiment.py`
 
-권장 도구:
-- **PlotJuggler** — ULog 직접 로드, 라이브/오프라인 시계열 시각화 (`apt install plotjuggler` 또는 AppImage)
-- **pyulog** — Python에서 ULog → pandas DataFrame (`pip install pyulog`)
-- **flight_review** — PX4 공식 웹 기반 로그 분석
+[tools/plot_experiment.py](tools/plot_experiment.py)는 실험 디렉토리 하나를 입력으로 받아 3×3 plot 을 그린다.
 
-분석 코드는 `tools/data/<실험>/` 한 디렉토리를 입력으로 받아:
-1. `flight.ulg` 에서 필요 토픽 추출
-2. `disturbance.tsv` 의 외란 시점을 ULog 시간축으로 변환 (8.2 / data README 참조)
-3. 원하는 지표 (위치 편차, 자세 excursion, 회복 시간, RMS 등) 계산·시각화
+```bash
+./tools/plot_experiment.py tools/data/20260515T153021_baseline_gust
+./tools/plot_experiment.py tools/data/<exp> --source groundtruth --no-show
+```
 
-> 이 단계는 의도적으로 SITL 저장소와 분리. 제어기 비교·튜닝 시 분석 코드만 독립적으로 발전시킬 수 있다.
+- **Row 1 궤적**: top / front / side view, 시간 흐름을 무지개 색으로. 6개 축 scale 통일.
+- **Row 2 위치 / Row 3 자세**: x/y/alt, roll/pitch/yaw vs 시간. ground truth(solid) + estimate(dashed).
+- **다중 외란**: `disturbance.tsv` 의 모든 외란을 각각 색깔 음영 구간으로 표시 (색상은 시뮬 화면 화살표 팔레트와 동일 순서). 시간축 0점 = 첫 외란 시작.
+- `disturbance.tsv`(unix time) ↔ `flight.ulg`(PX4 boot µs) 정렬은 `vehicle_gps_position.time_utc_usec` 로 자동 처리.
+- 출력 `analysis.png` 를 실험 디렉토리에 저장. 전제: `pip3 install --user pyulog`.
+
+> 더 깊은 분석(회복 시간·RMS·제어기 비교 등)은 PlotJuggler / pyulog / flight_review 등 외부 도구로 `tools/data/<실험>/` 을 입력 삼아 자유롭게 확장할 수 있다.
 
 ---
 
@@ -943,10 +981,11 @@ S550 SDF를 typhoon_h480에서 분기(이름만 치환) 후 빌드:
 - [x] Step 10 — **외란 입력 도구 Phase 2** — cone-tipped 화살표, 드론에 부착되어 매 step 추적 (factory spawn + SetWorldPose)
 - [x] Step 11 — `s550.world` 추가 (단순 회색 ground)
 - [x] Step 12 — **실험 데이터 기록** — `record_experiment.py` (ULog 스냅샷 + 외란 TSV + metadata.json), `tools/data/` 구조 (8장)
-- [ ] Step 13 — **랜덤 외란 지원** — disturbance_plugin에 Gaussian noise 추가 (water spray 모사: 평균 force + 대역제한 jitter)
-- [ ] Step 14 — **베이스라인 측정** — default PX4의 step/random 외란 응답 정량화 (분석은 별도 코드)
-- [ ] Step 15 — **외란 보상 제어기** — DOB / 적분기 튜닝 / ADRC 등 (별도 세션, 접근 미정)
-- [ ] Step 16 — 통합 시나리오 스크립트 (takeoff→호버→외란→로그→착륙 자동화)
+- [x] Step 13 — **로그 시각화** — `plot_experiment.py` 3×3 plot (궤적/위치/자세, 외란 구간 음영)
+- [x] Step 14 — **JSON 외란 프로파일** — `disturbance_profiles.json` + 플러그인 전면 개편: OU 확률 외란, body/global frame, 타임라인 트리거, 다중 외란, 외란별 화살표 (7장)
+- [ ] Step 15 — **베이스라인 측정** — default PX4의 외란 응답 정량화 (회복 시간·RMS 등)
+- [ ] Step 16 — **외란 보상 제어기** — DOB / 적분기 튜닝 / ADRC 등 (별도 세션, 접근 미정)
+- [ ] Step 17 — 통합 시나리오 스크립트 (takeoff→호버→외란→로그→착륙 자동화)
 - [ ] (이후) S550 지상 진동 해소, mesh S550 사양으로 교체, 소방 페이로드/센서 추가, ROS 2 px4_ros_com 브리지 등
 
 ---

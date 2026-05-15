@@ -1,0 +1,51 @@
+{
+  "_comment": "외란 프로파일 정의 파일. apply_disturbance.py 가 이 파일을 읽어 disturbance_plugin 에 전달하고, 플러그인이 타임라인에 따라 외란을 인가한다. 시간 0점 = 트리거 메시지가 도착한 sim time.",
+  "_frame_convention": {
+    "global": "Gazebo 월드 고정 ENU 좌표. X = 동(East), Y = 북(North), Z = 위(Up). 따라서 중력은 -Z, 하강기류(downdraft)는 force Z 가 음수.",
+    "body": "드론 동체 고정 FLU 좌표. X = 전방(Forward), Y = 좌(Left), Z = 상(Up). 드론이 기울면 이 좌표축도 함께 기운다. 전방 분사의 반발력은 force X 가 음수.",
+    "note": "PX4 펌웨어 내부는 NED 를 쓰지만, 이 외란 도구는 Gazebo Link API 위에서 동작하므로 JSON 입력은 위의 ENU/FLU 규약을 따른다. 헷갈리지 말 것.",
+    "offset_note": "offset 은 frame 과 무관하게 항상 body(FLU) 좌표다. _schema.offset 참조."
+  },
+  "_schema": {
+    "name": "외란 식별 이름 (화살표 라벨 / disturbance.tsv 행 이름에 사용)",
+    "frame": "'body' 또는 'global'. 좌표계 정의는 위 _frame_convention 참조. body = 동체 고정 FLU, global = 월드 고정 ENU",
+    "start_time": "트리거 0점 기준 외란 시작 시각 (s)",
+    "duration": "외란 지속 시간 (s). 외란 활성 구간 = [start_time, start_time + duration]",
+    "force": "force.mean / force.stddev — 각 [x,y,z] (N). OU 과정의 평균(mean) 과 정상상태 표준편차(stddev)",
+    "torque": "torque.mean / torque.stddev — 각 [x,y,z] (N·m). force 와 동일하게 OU 적용",
+    "offset": "force 인가점 offset [x,y,z] (m). frame 설정과 무관하게 항상 body(FLU) 좌표 — link origin 기준. offset 은 '기체 어디에 힘이 작용하는가'라는 물리적 위치이므로 frame 이 global 이어도 body 기준이다. frame 은 force/torque 방향만 결정한다",
+    "correlation_time": "OU 과정의 상관시간 tau (s). 작을수록 white noise 에 가깝고, 클수록 천천히 변동. 외란별 개별 지정"
+  },
+  "disturbances": [
+    {
+      "name": "side_gust",
+      "frame": "global",
+      "start_time": 5.0,
+      "duration": 8.0,
+      "force":  { "mean": [0.0, 20.0, 0.0], "stddev": [0.5, 1.0, 0.3] },
+      "torque": { "mean": [0.0, 0.0, 0.0], "stddev": [0.0, 0.0, 0.0] },
+      "offset": [0.0, 0.0, 0.0],
+      "correlation_time": 1.5
+    },
+    {
+      "name": "spray_reaction",
+      "frame": "body",
+      "start_time": 8.0,
+      "duration": 3.0,
+      "force":  { "mean": [-20.0, 0.0, 0.0], "stddev": [1.0, 0.5, 0.5] },
+      "torque": { "mean": [0.0, 0.0, 0.0], "stddev": [0.05, 0.05, 0.0] },
+      "offset": [0.15, 0.0, -0.05],
+      "correlation_time": 0.2
+    },
+    {
+      "name": "downdraft",
+      "frame": "global",
+      "start_time": 15.0,
+      "duration": 4.0,
+      "force":  { "mean": [0.0, 0.0, -15.0], "stddev": [0.3, 0.3, 1.5] },
+      "torque": { "mean": [0.0, 0.0, 0.0], "stddev": [0.0, 0.0, 0.0] },
+      "offset": [0.0, 0.0, 0.0],
+      "correlation_time": 0.8
+    }
+  ]
+}
