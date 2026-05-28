@@ -104,12 +104,12 @@ cd ~/Firefighting_Drone/SITL
 QGC가 자동으로 UDP 14550으로 PX4 SITL에 연결됩니다. pxh 프롬프트에서 `commander takeoff` 또는 QGC GUI의 Takeoff 슬라이드로 비행 시험 가능.
 
 **처음 셋업하는 경우** 2~3장을 먼저 진행해주세요. 핵심 절차 요약:
-1. `git clone <this-repo>` (이 저장소)
-2. 2장의 호스트 요건 확인
-3. 3.1 ~ 3.4 셋업 (PX4 clone, ubuntu.sh, Gazebo Classic 복구)
-4. **3.6 `./apply_overlay.sh` 실행** ← S550 커스터마이징 적용
-5. 3.5 QGroundControl AppImage 설치
-6. **7.4 disturbance_plugin 빌드** ← 외란 테스트 도구 (선택, 외란 실험 시 필요)
+1. 2장의 호스트 요건 확인
+2. **3.1 이 저장소 clone + 시스템 도구 설치** — `git clone https://github.com/GeunYoung-Heo/FirefightingDrone_SITL.git SITL` 후 `cd SITL`
+3. 3.2~3.4 셋업 (PX4 clone, ubuntu.sh, Gazebo Classic 복구)
+4. 3.5 QGroundControl AppImage 설치
+5. **3.6 `./apply_overlay.sh` 실행** ← S550 커스터마이징 적용
+6. **7.4 disturbance_plugin 빌드** ← 외란 테스트 도구 (선택; 안 빌드해도 비행은 정상, 부팅 시 무해한 plugin load 에러 1줄만 출력)
 7. `./run_sitl.sh s550` 실행
 
 **외란 테스트 — 호버 중인 SITL에 JSON 프로파일 외란 인가:**
@@ -161,7 +161,9 @@ conda config --set auto_activate_base false     # 영구
 
 > 처음 한 번만 수행하는 단계입니다. 이미 완료된 경우 `4. SITL 실행`으로 넘어가세요.
 
-### 3.1 시스템 사전 도구 설치
+### 3.1 시스템 사전 도구 설치 + 이 저장소 클론
+
+먼저 git 등 기본 도구를 설치합니다:
 
 ```bash
 sudo apt update
@@ -175,6 +177,25 @@ which python3            # /usr/bin/python3
 python3 --version        # Python 3.10.x
 which gcc cmake git
 ```
+
+그 다음 이 저장소(S550 SITL 작업공간)를 원하는 위치에 clone합니다. 아래 예시는 `~/Firefighting_Drone/` 아래에 받는 경우입니다 (경로는 자유롭게 바꿔도 됩니다):
+
+```bash
+# 받을 상위 폴더를 만들고 그 안으로 이동
+mkdir -p ~/Firefighting_Drone
+cd ~/Firefighting_Drone
+
+# 저장소 clone (HTTPS — GitHub 로그인이나 SSH 키 설정 없이 받을 수 있음)
+# 마지막 인자 'SITL' 은 만들어질 폴더 이름. README 전체가 이 이름을 가정합니다.
+git clone https://github.com/GeunYoung-Heo/FirefightingDrone_SITL.git SITL
+
+# 저장소 루트로 이동 — 이후 모든 명령은 이 폴더 기준으로 실행합니다.
+cd SITL
+```
+
+clone이 끝나면 `~/Firefighting_Drone/SITL/` 폴더가 생기고, 그 안에 이 `README.md`, `run_sitl.sh`, `overlay/`, `tools/` 등이 들어 있습니다. 이 폴더가 본문에서 말하는 **"저장소 루트"** 입니다. 다음 절(§3.2)의 PX4-Autopilot은 바로 이 폴더 안에 받게 됩니다.
+
+> SSH 키를 이미 설정해 둔 경우엔 `git clone git@github.com:GeunYoung-Heo/FirefightingDrone_SITL.git SITL` 도 됩니다. 잘 모르겠으면 위의 HTTPS 방식을 쓰면 됩니다.
 
 ### 3.2 PX4-Autopilot v1.14.4 클론
 
@@ -223,6 +244,11 @@ bash ./Tools/setup/ubuntu.sh
 - gcc-arm-none-eabi (NuttX 크로스컴파일러; SITL에는 불필요하지만 향후 실기체 작업에 유용)
 
 > **주의 — Gazebo 패키지 함정 (Issue #1 참고):** 이 스크립트는 Jammy에서 **gz-garden** (새 Gazebo Sim)을 설치하며, 그 과정에서 충돌 회피로 **gazebo-classic 런타임 바이너리(`/usr/bin/gazebo`)가 자동 제거**됩니다. 해결은 3.4절 참조.
+
+**외란 플러그인 추가 의존성:** `ubuntu.sh`는 외란 플러그인 빌드(§7.4)에 필요한 `libjsoncpp-dev`를 설치하지 않습니다. 보통 OpenCV/Gazebo 의존성으로 함께 딸려오지만, 누락 시 §7.4의 `cmake`가 실패하므로 외란 실험을 할 거라면 미리 설치해 두면 안전합니다:
+```bash
+sudo apt install -y libjsoncpp-dev
+```
 
 검증:
 ```bash
@@ -607,8 +633,10 @@ make -j$(nproc)
 
 산출물: `build/libdisturbance_plugin.so`. `run_sitl.sh`가 자동으로 `GAZEBO_PLUGIN_PATH`에 prepend.
 
-> 의존성: `libgazebo-dev` (3.4절에서 설치됨) + `libjsoncpp-dev`. jsoncpp 미설치 시 `cmake ..` 가 `pkg_check_modules(JSONCPP REQUIRED jsoncpp)` 에서 실패한다 → `sudo apt install libjsoncpp-dev`.
+> 의존성: `libgazebo-dev` (3.4절에서 설치됨) + `libjsoncpp-dev` (§3.3에서 미리 설치 권장). jsoncpp 미설치 시 `cmake ..` 가 `pkg_check_modules(JSONCPP REQUIRED jsoncpp)` 에서 실패한다 → `sudo apt install libjsoncpp-dev`.
 > 플러그인 소스/CMake 를 바꿨으므로 기존 `build/` 는 지우고 새로 빌드할 것.
+
+> **빌드는 선택입니다.** 빌드하지 않고 `./run_sitl.sh s550`을 실행해도 드론 spawn·비행은 정상입니다 — Gazebo Classic은 SDF가 참조하는 `libdisturbance_plugin.so`를 못 찾으면 `[Err] Failed to load plugin libdisturbance_plugin.so` 를 한 줄 출력한 뒤 그 plugin만 skip합니다. 외란 실험을 할 때만 이 절을 수행하면 됩니다.
 
 ### 7.5 SDF 등록 (이미 overlay에 반영됨)
 
