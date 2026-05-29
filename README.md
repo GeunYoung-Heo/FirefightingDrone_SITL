@@ -245,6 +245,21 @@ bash ./Tools/setup/ubuntu.sh
 
 > **주의 — Gazebo 패키지 함정 (Issue #1 참고):** 이 스크립트는 Jammy에서 **gz-garden** (새 Gazebo Sim)을 설치하며, 그 과정에서 충돌 회피로 **gazebo-classic 런타임 바이너리(`/usr/bin/gazebo`)가 자동 제거**됩니다. 해결은 3.4절 참조.
 
+> **주의 — pip이 requirements.txt를 거부할 수 있음 (Issue #6 참고):** 최신 pip(24.1+)에서는 `ubuntu.sh`가 부르는 `Tools/setup/requirements.txt`의 `matplotlib>=3.0.*` 줄이 거부되어 (`.* suffix can only be used with == or != operators`) **Python 의존성 설치가 통째로 중단**됩니다. 그러면 `kconfiglib` 등이 안 깔려 빌드가 `kconfiglib is not installed`로 실패합니다. 해결:
+> ```bash
+> # 1) requirements.txt의 와일드카드 표기 수정
+> sed -i 's/^matplotlib>=3.0\.\*/matplotlib>=3.0/' \
+>   ~/Firefighting_Drone/SITL/PX4-Autopilot/Tools/setup/requirements.txt
+> # 2) 시스템 python3에 의존성 재설치 (빌드는 /usr/bin/python3 를 사용)
+> /usr/bin/python3 -m pip install -r \
+>   ~/Firefighting_Drone/SITL/PX4-Autopilot/Tools/setup/requirements.txt
+> ```
+
+> **주의 — empy 버전 (Issue #6 참고):** 위 requirements는 `empy>=3.3`이라 최신 `empy 4.x`가 깔리는데, PX4 v1.14의 uORB 코드 생성기는 구버전 API를 써서 `AttributeError: module 'em' has no attribute 'RAW_OPT'`로 빌드가 멈춥니다. `empy 3.3.4`로 고정하세요:
+> ```bash
+> /usr/bin/python3 -m pip install "empy==3.3.4"
+> ```
+
 **외란 플러그인 추가 의존성:** `ubuntu.sh`는 외란 플러그인 빌드(§7.4)에 필요한 `libjsoncpp-dev`를 설치하지 않습니다. 보통 OpenCV/Gazebo 의존성으로 함께 딸려오지만, 누락 시 §7.4의 `cmake`가 실패하므로 외란 실험을 할 거라면 미리 설치해 두면 안전합니다:
 ```bash
 sudo apt install -y libjsoncpp-dev
@@ -255,8 +270,8 @@ sudo apt install -y libjsoncpp-dev
 which ninja ccache exiftool
 arm-none-eabi-gcc --version  # 없어도 SITL은 OK; 재로그인 후에 PATH 잡힘
 
-# Python 의존성 (import name 기준)
-python3 - <<'PY'
+# Python 의존성 (import name 기준) — 빌드가 쓰는 /usr/bin/python3 로 검증
+/usr/bin/python3 - <<'PY'
 import importlib
 for pip, mod in [("empy","em"),("jinja2","jinja2"),("kconfiglib","kconfiglib"),
                  ("jsonschema","jsonschema"),("numpy","numpy"),("pyros-genmsg","genmsg"),
@@ -266,6 +281,8 @@ for pip, mod in [("empy","em"),("jinja2","jinja2"),("kconfiglib","kconfiglib"),
         importlib.import_module(mod); print(f"  OK    {pip}")
     except ImportError:
         print(f"  MISS  {pip}")
+import em  # empy 는 3.3.x 여야 함 (Issue #6) — 4.x 면 빌드 실패
+print(f"  empy version = {getattr(em, '__version__', '?')}  (3.3.x 기대)")
 PY
 ```
 
@@ -287,20 +304,33 @@ gazebo --version                  # 11.10.2
 
 ### 3.5 QGroundControl 설치
 
-[공식 사이트](https://docs.qgroundcontrol.com/master/en/getting_started/download_and_install.html)에서 AppImage 다운로드 → 실행 권한 부여 → 어느 경로든 보관:
+QGC의 설치 방법(파일 형식·사전 준비)은 버전마다 바뀌므로, **반드시 공식 설치 가이드를 보고 본인 플랫폼(Linux)에 맞게 설치하세요:**
 
-```bash
-mkdir -p ~/Apps
-# 다운로드한 파일을 ~/Apps/QGroundControl-x86_64.AppImage 로 이동
-chmod +x ~/Apps/QGroundControl-x86_64.AppImage
-```
+→ <https://docs.qgroundcontrol.com/Stable_V5.0/en/qgc-user-guide/getting_started/download_and_install.html>
+
+Ubuntu(Linux)의 경우 가이드가 안내하는 핵심 절차는 대략 다음과 같습니다 (자세한 내용·최신 명령은 위 링크 기준):
+
+1. 가이드에 적힌 **사전 준비** 실행 — 보통 현재 사용자를 `dialout` 그룹에 추가하고, 충돌하는 모뎀 매니저를 제거한 뒤 **로그아웃/재로그인**:
+   ```bash
+   sudo usermod -a -G dialout $USER
+   sudo apt-get remove modemmanager -y
+   # 로그아웃 후 다시 로그인 (그룹 변경 반영)
+   ```
+2. 가이드의 다운로드 링크에서 Linux용 **AppImage**를 받아 실행 권한을 부여하고 보관:
+   ```bash
+   mkdir -p ~/Apps
+   # 다운로드한 AppImage 를 ~/Apps/QGroundControl.AppImage 로 이동
+   chmod +x ~/Apps/QGroundControl.AppImage
+   ```
+
+> 파일 이름은 받은 버전에 따라 다릅니다(예: `QGroundControl-x86_64.AppImage`). 본인이 저장한 실제 파일명에 맞춰 아래 검증 명령의 경로를 조정하세요.
 
 설치 검증 (5초 후 자동 종료):
 ```bash
-timeout 5 ~/Apps/QGroundControl-x86_64.AppImage 2>&1 | head -5
+timeout 5 ~/Apps/QGroundControl.AppImage 2>&1 | head -5
 ```
 
-GUI 창이 잠깐이라도 뜨면 정상.
+GUI 창이 잠깐이라도 뜨면 정상. SITL 실행 중이면 MAVLink UDP 14550으로 자동 연결됩니다.
 
 ### 3.6 S550 Overlay 적용
 
@@ -638,9 +668,11 @@ make -j$(nproc)
 
 > **빌드는 선택입니다.** 빌드하지 않고 `./run_sitl.sh s550`을 실행해도 드론 spawn·비행은 정상입니다 — Gazebo Classic은 SDF가 참조하는 `libdisturbance_plugin.so`를 못 찾으면 `[Err] Failed to load plugin libdisturbance_plugin.so` 를 한 줄 출력한 뒤 그 plugin만 skip합니다. 외란 실험을 할 때만 이 절을 수행하면 됩니다.
 
-### 7.5 SDF 등록 (이미 overlay에 반영됨)
+### 7.5 SDF 등록 (참고용 — 직접 할 일 없음)
 
-`s550.sdf.jinja`의 `</model>` 직전에 다음 블록이 있다:
+> **이 절은 손댈 필요가 없습니다.** S550로 외란 테스트만 할 거라면 §7.4(빌드) → §7.6(사용)만 따라가면 됩니다. 아래 내용은 "플러그인이 어떻게 드론에 연결되는지"에 대한 설명 + 화살표 등 동작을 커스터마이즈하고 싶을 때 보는 참고 자료입니다. 다른 기체로 이식하려는 경우에만 직접 추가하면 됩니다.
+
+플러그인을 드론에 연결하는 `<plugin>` 블록은 `s550.sdf.jinja`에 **이미 들어가 있고, `apply_overlay.sh`(§3.6)가 PX4 트리에 적용**합니다. `s550.sdf.jinja`의 `</model>` 직전에 다음 블록이 있다:
 
 ```xml
 <plugin name="disturbance" filename="libdisturbance_plugin.so">
@@ -981,6 +1013,50 @@ S550 SDF를 typhoon_h480에서 분기(이름만 치환) 후 빌드:
 - 사용하지 않을 actuator의 joint는 fixed + 채널·플러그인 제거가 통일된 패턴.
 - chain depth는 ODE 솔버 컴플라이언스를 누적시키므로 가능하면 base_link 직속 평탄화.
 - visual-only로 쓸 collision은 제거.
+
+### Issue #6 — `ubuntu.sh`의 Python 의존성 설치 실패 (최신 pip + empy 4.x)
+
+**증상**
+- `bash Tools/setup/ubuntu.sh` 실행 중 pip 단계에서 중단:
+  ```
+  ERROR: Invalid requirement: 'matplotlib>=3.0.*': .* suffix can only be used with `==` or `!=` operators
+      matplotlib>=3.0.*  (from line 11 of .../Tools/setup/requirements.txt)
+  ```
+- 이후 `./run_sitl.sh s550`(=`make px4_sitl`) 실행 시 configure 단계 실패:
+  ```
+  ModuleNotFoundError: No module named 'menuconfig'
+  CMake Error at cmake/kconfig.cmake:6 (message):
+    kconfiglib is not installed or not in PATH
+  ```
+- kconfiglib을 깐 뒤에도 빌드 도중 uORB 헤더 생성에서 실패:
+  ```
+  AttributeError: module 'em' has no attribute 'RAW_OPT'
+  ...px_generate_uorb_topic_files.py", line 182, in generate_by_template
+  ```
+
+**원인**
+- **(1) matplotlib 와일드카드:** `requirements.txt`의 `matplotlib>=3.0.*`는 구버전 pip에선 통과했지만, pip 24.1+ 부터 `.*` 접미사를 `>=`와 함께 쓰는 것을 금지(PEP 440 엄격화). 이 한 줄에서 pip이 즉시 종료되어 **그 줄 이후뿐 아니라 requirements 전체가 설치되지 않음** → `kconfiglib`(=`menuconfig` 제공) 누락.
+- **(2) empy 버전:** requirements가 `empy>=3.3`이라 `empy 4.x`가 설치되는데, 4.x는 `RAW_OPT`/`BUFFERED_OPT` 등 모듈 상수와 인터프리터 API를 제거. PX4 v1.14의 `px_generate_uorb_topic_files.py`는 구 API를 호출하므로 코드 생성 단계에서 죽음.
+- 부수: conda base가 활성이어도 PX4 빌드는 `/usr/bin/python3`를 사용하므로, conda 쪽 python에 설치하면 빌드가 못 찾음.
+
+**해결**
+```bash
+# (1) requirements.txt 와일드카드 표기 수정
+sed -i 's/^matplotlib>=3.0\.\*/matplotlib>=3.0/' \
+  PX4-Autopilot/Tools/setup/requirements.txt
+
+# (2) 빌드가 쓰는 시스템 python3 에 의존성 (재)설치
+/usr/bin/python3 -m pip install -r PX4-Autopilot/Tools/setup/requirements.txt
+
+# (3) empy 를 PX4 v1.14 호환 버전으로 고정
+/usr/bin/python3 -m pip install "empy==3.3.4"
+```
+이후 §3.3의 검증 블록으로 `empy version = 3.3.x`와 `kconfiglib OK`를 확인하고 다시 빌드.
+
+**교훈**
+- `requirements.txt`는 PX4-Autopilot 서브모듈 소속이라 `git submodule update`/재클론 시 `matplotlib>=3.0.*`로 되돌아올 수 있음 → 새 머신/재클론 때마다 이 함정을 의심.
+- pip의 첫 에러로 설치가 통째로 멈추므로, "kconfiglib만 따로 설치"하지 말고 **requirements 전체를 재설치**하는 게 안전.
+- PX4 v1.14는 `empy<4`(권장 3.3.4)에 묶여 있음. 추가로 numpy 2.x에서 문제가 나면 `/usr/bin/python3 -m pip install "numpy<2"`도 검토.
 
 ### 그 외 무해한 메시지 (안 고쳐도 됨)
 
