@@ -102,6 +102,73 @@ def publish_profile(topic, dists):
             pass
 
 
+def publish_mavlink_ff(endpoint, dists):
+    """Send first disturbance to PX4 as MAVLink DEBUG_FLOAT_ARRAY (name="DIST").
+
+    mc_rate_control 이 debug_array uORB 를 subscribe 해서 ff 보상에 사용한다.
+    Payload (8 float, FRD 좌표):
+      [0..2] force_body  [N]
+      [3..5] torque_body [N.m]
+      [6]    start_offset_s  (트리거 0점 기준 시작 시각)
+      [7]    duration_s
+
+    JSON 의 body FLU → PX4 body FRD 변환을 여기서 처리: Y, Z 부호 반전.
+    첫 외란만 송신. frame=global 이면 스킵 (ff 는 body 만 지원).
+    """
+    try:
+        from pymavlink.dialects.v20 import common as mavlink2
+    except ImportError:
+        print("[apply] pymavlink 미설치 — FF broadcast 스킵 "
+              "(pip3 install --user pymavlink)")
+        return
+
+    d = dists[0]
+    name = d.get('name', 'dist_0')
+    frame = d.get('frame', 'body')
+    if frame != 'body':
+        print(f"[apply] FF skip: '{name}' frame={frame} "
+              f"(ff 는 body frame 외란만 지원)")
+        return
+
+    fx, fy, fz = (float(v) for v in d['force']['mean'])
+    tx, ty, tz = (float(v) for v in d['torque']['mean'])
+    # FLU (apply_disturbance / Gazebo) → FRD (PX4 펌웨어)
+    fy, fz = -fy, -fz
+    ty, tz = -ty, -tz
+
+    payload = [fx, fy, fz, tx, ty, tz,
+               float(d['start_time']), float(d['duration'])]
+    payload += [0.0] * (58 - len(payload))   # debug_array.ARRAY_SIZE = 58
+
+    # MAVLink2 DEBUG_FLOAT_ARRAY 메시지를 packing 후 raw UDP 로 송신
+    mav = mavlink2.MAVLink(file=None, srcSystem=255, srcComponent=190)
+    msg = mavlink2.MAVLink_debug_float_array_message(
+        int(time.time() * 1e6),  # time_usec
+        b'DIST',                 # name (bytes, 10 char max)
+        0,                       # array_id
+        payload,
+    )
+    buf = msg.pack(mav)
+
+    # endpoint parse — 'udpout:host:port' 또는 'udp:host:port'
+    import socket
+    parts = endpoint.split(':')
+    if parts and parts[0] in ('udpout', 'udp', 'udpin'):
+        parts = parts[1:]
+    if len(parts) != 2:
+        print(f"[apply] FF skip: invalid --ff-endpoint {endpoint!r} "
+              f"(expected udpout:host:port)")
+        return
+    host, port = parts[0], int(parts[1])
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.sendto(buf, (host, port))
+
+    print(f"  ff bcast: name={name} FRD F=[{fx:.2f},{fy:.2f},{fz:.2f}]N "
+          f"τ=[{tx:.3f},{ty:.3f},{tz:.3f}]Nm "
+          f"t=[{d['start_time']:.1f},{d['start_time']+d['duration']:.1f}]s "
+          f"→ {endpoint}")
+
+
 def vec_str(v):
     return ",".join(f"{float(x):.4f}" for x in v)
 
@@ -141,6 +208,10 @@ def main():
                    help='외란 이벤트를 TSV 로 append (한 외란당 1행)')
     p.add_argument('--no-wait', action='store_true',
                    help='트리거만 하고 즉시 종료 (타임라인 종료 대기 안 함)')
+    p.add_argument('--no-ff-broadcast', action='store_true',
+                   help='PX4 에 MAVLink FF 메시지 안 보냄 (기본은 송신)')
+    p.add_argument('--ff-endpoint', default='udpout:localhost:14580',
+                   help='PX4 SITL MAVLink endpoint (default: udpout:localhost:14580)')
     args = p.parse_args()
 
     dists = load_profile(args.profiles)
@@ -163,6 +234,8 @@ def main():
 
     send_unix = time.time()
     publish_profile(topic, dists)
+    if not args.no_ff_broadcast:
+        publish_mavlink_ff(args.ff_endpoint, dists)
 
     if args.log:
         write_tsv(args.log, send_unix, dists)

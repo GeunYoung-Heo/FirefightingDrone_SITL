@@ -1,0 +1,20 @@
+{
+  "_comment": "FF 검증용 단일 외란 — 분사 반발력 모사 (body frame, step force). stddev=0 이므로 OU 노이즈 없이 평균 force 만 일정하게 인가된다. apply_disturbance.py 가 첫 외란을 DEBUG_FLOAT_ARRAY(name='DIST')로 PX4 에 broadcast → mc_rate_control 이 받아 ff 보상 (MC_FF_ENABLE=1 일 때).",
+  "_frame_convention": {
+    "global": "Gazebo 월드 고정 ENU (X=동, Y=북, Z=위)",
+    "body":   "드론 동체 고정 FLU (X=전방, Y=좌, Z=상). 본 외란은 body FLU 의 -X 방향 = 후방 push (전방 분사 반발력)",
+    "offset_note": "offset 은 frame 과 무관하게 항상 body(FLU) 좌표"
+  },
+  "disturbances": [
+    {
+      "name": "spray_single",
+      "frame": "body",
+      "start_time": 1.0,
+      "duration": 50.0,
+      "force":  { "mean": [-10.0, 0.0, 0.0], "stddev": [0.0, 0.0, 0.0] },
+      "torque": { "mean": [0.0, 0.0, 0.0],  "stddev": [0.0, 0.0, 0.0] },
+      "offset": [0.0, 0.0, 0.0],
+      "correlation_time": 0.01
+    }
+  ]
+}
