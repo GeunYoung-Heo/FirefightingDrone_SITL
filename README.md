@@ -761,6 +761,155 @@ cd ~/Firefighting_Drone/SITL
 
 `length = min(|평균 force| × 0.05, 2.0) m` — 평균 외력 크기에 비례. 위 그림의 ━ 부분이 shaft cylinder, ▶ 부분이 cone STL mesh.
 
+### 7.11 FF 제어기 활성화 및 검증
+
+`mc_pos_control` 의 velocity controller (`PositionControl::_velocityControl()`) 에 알려진 외란을 미리 상쇄하는 feedforward 항을 추가했다 (branch `ff-controller_geunyoung`). apply_disturbance.py 가 외란 트리거 시 MAVLink `DEBUG_FLOAT_ARRAY` (name=`"DIST"`) 로 PX4 SITL 에 같은 외란 정보를 broadcast → `MulticopterPositionControl` 이 debug_array uORB 로 받아 타임라인을 굴리고, 활성 구간 동안 `PositionControl::setExternalForceBody()` 로 외력을 넘겨 `_acc_sp -= F_world/mass` 로 합산한다.
+
+`_accelerationControl()` 이 이 `_acc_sp` 를 thrust 벡터 + 자세 setpoint 로 변환하면서 **외란 반대 방향으로 자세를 기울여 수평 외란을 상쇄**한다. 자세 기울임에 따른 수직 thrust 손실 (cosθ) 은 PX4 가 `collective_thrust /= cos_tilt` 로 자동 보정한다.
+
+#### 7.11.1 전제
+
+- overlay 적용 완료 (§3.6). 이 branch 의 `mc_pos_control` 수정본이 PX4 트리에 반영돼 있어야 함.
+- `apply_disturbance.py` 의 FF broadcast 에는 `pymavlink` 필요:
+  ```bash
+  pip3 install --user pymavlink
+  ```
+
+#### 7.11.2 신규 파라미터
+
+| 파라미터 | 기본 | 의미 |
+|---|---|---|
+| `MC_FF_ENABLE` | 0 (off) | FF 보상 on/off 스위치 |
+| `MC_FF_MASS` | 2.2 | 드론 총 질량 [kg]. 외란 force[N] → 가속도[m/s²] 변환에 사용 |
+
+`pxh> param show <name>` 으로 조회, `pxh> param set <name> <값>` 으로 설정. **hot-reload** 되므로 비행 중 토글 가능.
+
+#### 7.11.3 검증용 프로파일
+
+[tools/profile_single_spray.json](tools/profile_single_spray.json) — body frame 의 X 방향 step force 하나만 정의된 단순 프로파일. FF 효과 비교에 최적.
+
+#### 7.11.4 실험 절차
+
+**Step 1 — Baseline (순수 PX4 위치 제어기)**
+
+```bash
+cd ~/Firefighting_Drone/SITL
+./run_sitl.sh s550
+```
+`pxh>` 에서:
+```
+pxh> param set MC_FF_ENABLE 0
+pxh> commander takeoff
+[EKF 안정화 30초]
+```
+새 터미널을 하나 더 연 다음에 (SITL 은 실행한 채로 두고):
+```bash
+cd ~/Firefighting_Drone/SITL
+./tools/record_experiment.py --name spray_ff_off \
+    --profiles tools/profile_single_spray.json \
+    --notes "Baseline, MC_FF_ENABLE=0"
+```
+
+이 명령이 실행되면:
+1. JSON 프로파일에 정의된 외란 타임라인이 트리거되고 (Gazebo 는 물리적 force 인가, PX4 는 MAVLink 로 FF 정보 수신 — 이 실험은 FF off 이므로 사용은 안 함),
+2. 타임라인 종료 후 `--settle` (기본 5s) 대기,
+3. 자동으로 `tools/data/<YYYYMMDDTHHMMSS>_spray_ff_off/` 형태의 새 폴더가 생성되고 그 안에 `flight.ulg` (ULog 스냅샷) / `disturbance.tsv` (외란 이벤트) / 사용한 프로파일 사본 / `metadata.json` 이 저장된다. 자세한 형식은 §8 참조.
+
+**실험 결과를 시각화해보고 싶다면** 방금 생성된 디렉토리 경로를 `plot_experiment.py` 에 넘긴다:
+```bash
+./tools/plot_experiment.py tools/data/<YYYYMMDDTHHMMSS>_spray_ff_off
+# ↑ 실제 타임스탬프는 record 실행 시각으로 대체. `ls tools/data/` 로 최신 디렉토리 확인 가능.
+```
+그러면 같은 디렉토리 안에 `analysis.png` (3×3 plot — 궤적 / 위치 / 자세 vs 시간, 외란 구간 음영) 이 저장된다. §8.5 참조.
+
+**Step 2 — FF on**
+
+Ctrl+C로 모든 터미널 종료한 다음, 시뮬레이션을 재기동한다
+```bash
+./run_sitl.sh s550
+```
+
+이번에는 FF 제어기를 활성화할 것이기 때문에, `pxh>` 에서 `MC_FF_ENABLE` (on/off 스위치) 을 `1` 로, `MC_FF_MASS` (드론 총 질량 [kg], §7.11.2) 를 실제 AUW 인 `2.2` 로 설정해준 뒤 `commander takeoff` 로 이륙시킨다:
+```
+pxh> param set MC_FF_ENABLE 1
+pxh> param set MC_FF_MASS 2.2
+pxh> commander takeoff
+[EKF 30초]
+```
+새 터미널을 하나 더 연 다음
+```bash
+./tools/record_experiment.py --name spray_ff_on \
+    --profiles tools/profile_single_spray.json \
+    --notes "FF on, mass=2.2"
+```
+Step 1 과 동일하게 `tools/data/<YYYYMMDDTHHMMSS>_spray_ff_on/` 폴더가 생성된다. 시각화도 같은 방식:
+```bash
+./tools/plot_experiment.py tools/data/<위에서_생성된_spray_ff_on_디렉토리>
+```
+
+**Step 3 — 비교**
+
+두 디렉토리의 `analysis.png` 를 나란히 열어 외란 구간 (Row 2 위치 시계열의 음영 구간) 을 비교. FF 가 유효하면 **수평 위치 이탈**(spray_single 은 drone yaw 에 따라 X 또는 Y 성분) 이 유의미하게 감소.
+
+#### 7.11.5 (참고) 외란 정보가 PX4 에 도달하는지 확인 — 디버그
+
+apply_disturbance.py 는 JSON 의 **첫 외란** 을 MAVLink `DEBUG_FLOAT_ARRAY` (name=`"DIST"`) 로 `udpout:localhost:14580` 에 송신한다.
+
+Payload 8 float:
+| index | 필드 | 단위 |
+|---|---|---|
+| `[0..2]` | force_body (body FRD) | N |
+| `[3..5]` | torque_body (body FRD) | N·m |
+| `[6]` | start_offset_s | s |
+| `[7]` | duration_s | s |
+
+`pxh>` 에서 직접 확인:
+```
+pxh> listener debug_array
+```
+→ `name: "DIST"` + payload 가 보이면 도달 성공.
+
+FF 를 아예 안 보내고 싶으면 (예: Gazebo 만 외란 인가):
+```bash
+./tools/apply_disturbance.py --no-ff-broadcast
+```
+
+FF endpoint 를 다른 곳으로 (실기체 이식용):
+```bash
+./tools/apply_disturbance.py --ff-endpoint udpout:192.168.1.42:14580
+```
+
+#### 7.11.6 (참고) 좌표계 변환
+
+- JSON: **body FLU** 규약 (§7.7 참조)
+- `apply_disturbance.py` 가 송신 시 **FLU → FRD** 변환 (Y, Z 부호 반전) — PX4 firmware 는 FRD 로 받음.
+- `PositionControl::_velocityControl()` 안에서 **body FRD → world NED** 로 다시 회전 (drone yaw 사용, 호버 가정으로 roll/pitch=0 근사):
+  ```
+  F_world_x =  cos(yaw) · F_body_x − sin(yaw) · F_body_y
+  F_world_y =  sin(yaw) · F_body_x + cos(yaw) · F_body_y
+  F_world_z =  F_body_z
+  ```
+
+#### 7.11.7 (참고) 알려진 한계
+
+- **Body frame 외란만** — `frame: global` 로 정의된 외란은 apply_disturbance.py 가 FF broadcast 를 스킵하며 `[apply] FF skip: '<name>' frame=global` 을 출력한다. mc_pos_control 의 body→world 변환이 yaw rotation 만 처리하기 때문.
+- **첫 외란만** — JSON 에 여러 외란이 있어도 FF 는 `disturbances[0]` 만 처리. 다중 외란 FF 는 후속 작업.
+- **Z 축 가라앉음** — 강한 외란 (예: `mg` 의 50% 이상) 시 transient 동안 약간의 Z 변동 관찰. 원인 (자세 setpoint transient / hover_thrust 추정 오차 / integrator wind-up) 은 후속 분석 예정.
+- **Torque FF 미구현** — `mc_pos_control` 은 force 만 처리. 외란에 offset 이 있어 torque 성분이 발생하는 경우는 후속 작업.
+
+#### 7.11.8 (참고) 원본 s550 환경 복귀
+
+FF 코드 없는 상태로 돌아가려면 branch 전환:
+```bash
+git switch main
+# main 은 s550 검증 환경 (ff 코드 없음) — 원본 mc_pos_control, MC_FF_* 파라미터 없음
+```
+반대로 다시 FF 작업으로 돌아오려면:
+```bash
+git switch ff-controller_geunyoung
+./apply_overlay.sh
+```
+
 ---
 
 ## 8. 실험 데이터 기록 (Logging)
